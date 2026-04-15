@@ -1,0 +1,36 @@
+@import "tailwindcss";
+
+/* Professional Bank Color Palette */
+:root {
+  --bank-navy: #0f172a;
+  --bank-green: #059669;
+  --bank-slate: #f1f5f9;
+}
+
+@keyframes progress-slide {
+  0% { left: -100%; width: 30%; }
+  100% { left: 100%; width: 100%; }
+}
+
+.animate-progress {
+  position: absolute;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, #10b981, transparent);
+  animation: progress-slide 1.5s infinite linear;
+}
+
+/* Smooth Fade in for mobile */
+.animate-fadeIn {
+  animation: fadeIn 0.4s ease-out forwards;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Custom horizontal scroll for mobile tables */
+.table-container {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
