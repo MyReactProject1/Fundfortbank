@@ -20,42 +20,46 @@ export default function Login() {
       if (admin) { navigate('/admin'); return; }
       const { data: cust } = await supabase.from('customers').select('*').eq('id', authData.user.id).single();
       if (cust) { navigate('/dashboard'); return; }
-      alert("Account mismatch.");
+      alert("Profile data missing.");
     }
     setLoading(false);
   };
 
   return (
-    <div className="min-h-screen bg-[#0f172a] flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-white p-10 md:p-14 rounded-[3rem] shadow-2xl text-center relative overflow-hidden">
-        <Link to="/" className="inline-block mb-2 group">
-            <h2 className="text-3xl font-black italic text-[#0f172a] tracking-tighter uppercase group-hover:text-emerald-600 transition-colors underline decoration-emerald-500 decoration-8 underline-offset-8">FundFort</h2>
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+      <div className="w-full max-w-md bg-white p-10 border border-slate-200 shadow-sm rounded-md">
+        <Link to="/" className="block mb-6 text-center">
+            <h2 className="text-2xl font-bold text-[#0f172a]">FundFort Bank</h2>
+            <p className="text-slate-400 text-[11px] font-semibold uppercase mt-1">Online Banking Portal</p>
         </Link>
-        <p className="text-[9px] font-black uppercase tracking-[0.4em] text-slate-400 mb-10">Institutional Vault V4.2</p>
         
-        <form onSubmit={handleLogin} className="space-y-6" autoComplete="off">
-          <input 
-            type="email" name="user_email" placeholder="Email Address" required
-            className="w-full bg-slate-100 p-5 rounded-2xl border-none outline-none focus:ring-2 focus:ring-emerald-500 font-bold transition-all"
-            onChange={(e) => setEmail(e.target.value)}
-          />
-          <div className="relative">
+        <form onSubmit={handleLogin} className="space-y-5" autoComplete="off">
+          <div>
+            <label className="text-xs font-bold text-slate-600 block mb-1">Email Address</label>
             <input 
-              type={showPassword ? "text" : "password"} name="user_key" placeholder="Vault Access Key" required
-              className="w-full bg-slate-100 p-5 rounded-2xl border-none outline-none focus:ring-2 focus:ring-emerald-500 font-black text-xl tracking-widest text-center"
-              onChange={(e) => setAccountId(e.target.value)}
+              type="email" name="user_login_email" required
+              className="w-full border border-slate-300 p-3 rounded text-sm focus:border-blue-600 outline-none"
+              onChange={(e) => setEmail(e.target.value)}
             />
-            <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-4 top-1/2 -translate-y-1/2 text-[9px] font-black uppercase text-slate-400 hover:text-emerald-500">{showPassword ? 'Hide' : 'Show'}</button>
           </div>
-          <button disabled={loading} className="w-full bg-emerald-600 text-white py-6 rounded-2xl shadow-xl font-black uppercase tracking-widest text-[11px] hover:bg-[#0f172a] transition-all">
-            {loading ? 'Establishing Link...' : 'Access My Vault'}
+          <div>
+            <label className="text-xs font-bold text-slate-600 block mb-1">Vault Key (Account ID)</label>
+            <div className="relative">
+              <input 
+                type={showPassword ? "text" : "password"} name="user_login_key" required
+                className="w-full border border-slate-300 p-3 rounded text-sm focus:border-blue-600 outline-none"
+                onChange={(e) => setAccountId(e.target.value)}
+              />
+              <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-3 text-[10px] font-bold text-slate-400">{showPassword ? 'HIDE' : 'SHOW'}</button>
+            </div>
+          </div>
+          <button disabled={loading} className="w-full bg-[#0f172a] text-white py-3 rounded font-bold text-sm hover:bg-slate-800 transition-all">
+            {loading ? 'Validating...' : 'Log In'}
           </button>
         </form>
-        <div className="mt-10 pt-6 border-t flex justify-center gap-4 grayscale opacity-30">
-            <span className="text-[9px] font-bold">AES-256</span>
-            <span className="text-[9px] font-bold">UK-REG</span>
-            <span className="text-[9px] font-bold">SSL-SECURE</span>
-        </div>
+        <p className="mt-8 text-[10px] text-slate-400 text-center">
+          Secure bank access. End-to-end encrypted session.
+        </p>
       </div>
     </div>
   );
