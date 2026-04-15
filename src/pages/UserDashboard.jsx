@@ -50,7 +50,7 @@ export default function UserDashboard() {
             <p className="text-slate-400 text-xs font-bold uppercase tracking-widest italic">{profile.account_id}</p>
           </div>
           <div className="bg-slate-800 p-6 rounded border border-slate-700 min-w-[280px] text-right">
-             <p className="text-[10px] text-emerald-400 font-bold uppercase mb-1">Available Pool</p>
+             <p className="text-[10px] text-emerald-400 font-bold uppercase mb-1">Available Balance</p>
              <h3 className="text-5xl font-bold text-white tracking-tighter">${parseFloat(profile.balance || 0).toLocaleString()}</h3>
           </div>
         </div>
@@ -68,7 +68,7 @@ export default function UserDashboard() {
         <div className="bg-white p-8 border border-slate-200 shadow-sm rounded-md min-h-[400px]">
           {activeTab === 'overview' && (
              <table className="bank-table">
-                <thead><tr><th>Registry</th><th>Reference</th><th className="text-right">Fund Delta</th></tr></thead>
+                <thead><tr><th>Registry</th><th>Narration</th><th className="text-right">Amount</th></tr></thead>
                 <tbody>
                     {transactions.map(t => (
                         <tr key={t.id} className="hover:bg-slate-50 transition-colors">
