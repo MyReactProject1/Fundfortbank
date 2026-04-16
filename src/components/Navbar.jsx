@@ -4,27 +4,27 @@ import { useNavigate, Link } from 'react-router-dom';
 
 export default function Navbar({ userType }) {
   const navigate = useNavigate();
+
   const handleLogout = async () => {
     await supabase.auth.signOut();
     navigate('/');
   };
 
   return (
-    <nav className="bg-slate-900/90 backdrop-blur-md text-white py-4 px-10 flex justify-between items-center shadow-lg border-b border-white/5 sticky top-0 z-[1000]">
-      <Link to="/" className="flex items-center gap-3 group transition-transform active:scale-95">
-        <div className="bg-emerald-500 p-2 rounded-xl group-hover:rotate-12 transition-transform">
-          <span className="font-black text-xl text-slate-900 uppercase">FF</span>
-        </div>
-        <h1 className="text-2xl font-black tracking-tighter italic uppercase">
-          FundFort<span className="text-emerald-400">Bank</span>
-        </h1>
+    <nav className="bg-[#002147] text-white py-3 px-4 md:px-10 flex justify-between items-center sticky top-0 z-[1000]">
+      <Link to="/" className="flex items-center gap-2">
+        <div className="bg-emerald-500 p-1 rounded text-slate-900 font-bold text-sm">FF</div>
+        <h1 className="text-lg md:text-xl font-bold tracking-tight">FundFort</h1>
       </Link>
-      <div className="flex items-center gap-8">
-        <div className="hidden md:flex flex-col text-right">
-            <span className="text-[9px] font-black text-slate-500 uppercase tracking-[0.4em]">Protocol Active</span>
-            <span className="text-[10px] font-black text-emerald-500 uppercase tracking-widest italic">{userType}</span>
-        </div>
-        <button onClick={handleLogout} className="bg-white/5 hover:bg-rose-600 text-slate-400 hover:text-white px-6 py-2 rounded-xl transition-all text-[10px] font-black uppercase border border-white/5">
+
+      <div className="flex items-center gap-4">
+        <span className="text-[9px] font-bold uppercase text-emerald-400 border border-emerald-400/30 px-2 py-0.5 rounded hidden xs:block">
+          {userType}
+        </span>
+        <button 
+          onClick={handleLogout}
+          className="bg-white/10 hover:bg-rose-600 px-3 py-1.5 rounded text-[10px] font-bold uppercase transition-all"
+        >
           Logout
         </button>
       </div>
