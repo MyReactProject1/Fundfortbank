@@ -14,8 +14,7 @@ export default function UserDashboard() {
   useEffect(() => {
     const init = async () => {
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session) navigate('/');
-      else fetchUserData(session.user.id);
+      if (!session) navigate('/'); else fetchUserData(session.user.id);
     };
     init();
   }, [navigate]);
@@ -30,90 +29,106 @@ export default function UserDashboard() {
   }
 
   const handleAction = (type) => {
-    if (type === 'withdraw' && profile.withdraw_restricted) setRestriction({ title: "Operation Restricted", reason: profile.withdraw_reason });
+    if (type === 'withdraw' && profile.withdraw_restricted) setRestriction({ title: "Account Restricted", reason: profile.withdraw_reason });
     else if (type === 'transfer' && profile.transfer_restricted) setRestriction({ title: "Transfer Suspended", reason: profile.transfer_reason });
     else setActiveTab(type);
   };
 
-  if (!profile) return <div className="h-screen bg-slate-50 flex items-center justify-center font-bold text-slate-400">Verifying session...</div>;
+  if (!profile) return <div className="p-10 text-center font-semibold text-slate-400 uppercase text-xs tracking-widest">Loading secure session...</div>;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans pb-20">
-      <Navbar userType="Account Holder" />
-      <div className="max-w-6xl mx-auto py-10 px-6 animate-fadeIn">
+    <div className="min-h-screen bg-white">
+      <Navbar userType="Premier Client" />
+      
+      <div className="max-w-5xl mx-auto py-8 px-4">
         
-        {/* Profile Card */}
-        <div className="bg-[#0f172a] p-10 rounded shadow-lg flex flex-col md:flex-row items-center gap-10 mb-8 border-b-4 border-emerald-600">
-          <img src={profile.avatar_url || `https://ui-avatars.com/api/?name=${profile.full_name}&background=10b981&color=fff`} className="w-28 h-28 rounded-md border-4 border-slate-700 object-cover" />
-          <div className="flex-1 text-center md:text-left">
-            <h2 className="text-3xl font-bold text-white mb-1 uppercase tracking-tight">{profile.full_name}</h2>
-            <p className="text-slate-400 text-xs font-bold uppercase tracking-widest italic">{profile.account_id}</p>
+        {/* Simple Identification Bar */}
+        <div className="flex flex-col md:flex-row justify-between items-center pb-8 mb-8 border-b border-slate-100 gap-6">
+          <div className="flex items-center gap-5">
+            <img src={profile.avatar_url || `https://ui-avatars.com/api/?name=${profile.full_name}`} className="w-20 h-20 border border-slate-200 object-cover" />
+            <div>
+              <h2 className="text-2xl font-bold text-[#002b5c]">{profile.full_name}</h2>
+              <p className="text-xs text-slate-400 font-bold uppercase tracking-widest">ID: {profile.account_id} • {profile.nationality}</p>
+            </div>
           </div>
-          <div className="bg-slate-800 p-6 rounded border border-slate-700 min-w-[280px] text-right">
-             <p className="text-[10px] text-emerald-400 font-bold uppercase mb-1">Available Balance</p>
-             <h3 className="text-5xl font-bold text-white tracking-tighter">${parseFloat(profile.balance || 0).toLocaleString()}</h3>
+          <div className="text-center md:text-right border-l-0 md:border-l pl-0 md:pl-8 border-slate-100">
+             <p className="text-[10px] text-slate-400 font-bold uppercase mb-1">Available Balance</p>
+             <h3 className="text-4xl font-bold text-slate-900">${parseFloat(profile.balance || 0).toLocaleString()}</h3>
           </div>
         </div>
 
-        {/* Tab Buttons */}
-        <div className="flex flex-wrap gap-2 mb-8 border-b border-slate-200">
+        {/* Clean Tab Menu - No Background Colors */}
+        <div className="flex gap-8 mb-8 border-b border-slate-100 overflow-x-auto">
           {['overview', 'transfer', 'withdraw', 'inbox'].map(tab => (
-              <button key={tab} onClick={() => (tab === 'transfer' || tab === 'withdraw') ? handleAction(tab) : setActiveTab(tab)} className={`px-6 py-3 font-bold uppercase text-[10px] tracking-widest transition-all ${activeTab === tab ? 'bg-white text-[#0f172a] border border-b-0 border-slate-200' : 'text-slate-400 hover:text-[#0f172a]'}`}>
-                  {tab} {tab === 'inbox' && inbox.length > 0 && <span className="ml-2 bg-emerald-600 text-white px-2 py-0.5 rounded-full text-[9px]">{inbox.length}</span>}
+              <button 
+                key={tab} 
+                onClick={() => (tab === 'transfer' || tab === 'withdraw') ? handleAction(tab) : setActiveTab(tab)} 
+                className={`pb-4 px-1 text-[10px] font-black uppercase tracking-[0.2em] transition-all whitespace-nowrap ${activeTab === tab ? 'text-[#002b5c] border-b-2 border-[#002b5c]' : 'text-slate-400'}`}
+              >
+                  {tab} {tab === 'inbox' && inbox.length > 0 && `(${inbox.length})`}
               </button>
           ))}
         </div>
 
-        {/* Content Section */}
-        <div className="bg-white p-8 border border-slate-200 shadow-sm rounded-md min-h-[400px]">
+        {/* Data Display */}
+        <div className="min-h-[400px]">
           {activeTab === 'overview' && (
-             <table className="bank-table">
-                <thead><tr><th>Registry</th><th>Narration</th><th className="text-right">Amount</th></tr></thead>
-                <tbody>
-                    {transactions.map(t => (
-                        <tr key={t.id} className="hover:bg-slate-50 transition-colors">
-                            <td className="text-[10px] text-slate-400 font-bold uppercase">{new Date(t.created_at).toLocaleDateString()}</td>
-                            <td className="font-bold text-[#0f172a] uppercase text-sm tracking-tight">{t.description}</td>
-                            <td className={`text-right font-bold text-xl ${t.type === 'credit' ? 'text-emerald-600' : 'text-rose-600'}`}>{t.type === 'credit' ? '+' : '-'}${parseFloat(t.amount).toLocaleString()}</td>
+             <div className="space-y-1">
+                <table className="w-full text-left">
+                    <thead className="bg-slate-50 border-y border-slate-100">
+                        <tr>
+                            <th className="p-4 text-[9px] font-black uppercase text-slate-400">Date</th>
+                            <th className="p-4 text-[9px] font-black uppercase text-slate-400">Description</th>
+                            <th className="p-4 text-right text-[9px] font-black uppercase text-slate-400">Amount</th>
                         </tr>
-                    ))}
-                    {transactions.length === 0 && <tr><td colSpan="3" className="py-20 text-center text-slate-300 uppercase text-xs font-bold italic tracking-widest">Registry Empty</td></tr>}
-                </tbody>
-             </table>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                        {transactions.map(t => (
+                            <tr key={t.id} className="hover:bg-slate-50/50">
+                                <td className="p-4 text-xs text-slate-400 font-mono">{new Date(t.created_at).toLocaleDateString()}</td>
+                                <td className="p-4 text-sm font-bold text-[#002b5c]">{t.description}</td>
+                                <td className={`p-4 text-right font-bold text-sm ${t.type === 'credit' ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                    {t.type === 'credit' ? '+' : '-'}${parseFloat(t.amount).toLocaleString()}
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+                {transactions.length === 0 && <p className="py-20 text-center text-slate-300 text-xs font-bold uppercase tracking-widest">No activity found</p>}
+             </div>
           )}
 
           {activeTab === 'inbox' && (
             <div className="space-y-6">
               {inbox.map(m => (
-                <div key={m.id} className="bg-slate-50 p-8 border rounded hover:bg-white transition-all shadow-sm">
-                  <p className="text-[10px] text-slate-400 font-bold uppercase mb-4">Official Dispatch: {new Date(m.created_at).toLocaleString()}</p>
-                  <h5 className="font-bold text-lg text-[#0f172a] mb-2 uppercase">{m.title}</h5>
+                <div key={m.id} className="p-6 border-b border-slate-100">
+                  <p className="text-[9px] text-slate-400 font-bold uppercase mb-2">{new Date(m.created_at).toLocaleString()}</p>
+                  <h5 className="font-bold text-lg text-[#002b5c] mb-1">{m.title}</h5>
                   <p className="text-slate-600 text-sm leading-relaxed">{m.content}</p>
                 </div>
               ))}
-              {inbox.length === 0 && <div className="py-20 text-center text-slate-300 uppercase text-xs font-bold tracking-widest opacity-40">No messages on record</div>}
+              {inbox.length === 0 && <p className="py-20 text-center text-slate-300 text-xs font-bold uppercase tracking-widest">Inbox is empty</p>}
             </div>
           )}
 
           {(activeTab === 'transfer' || activeTab === 'withdraw') && (
-            <div className="max-w-md mx-auto py-16 text-center border p-10 rounded">
-                <h3 className="text-xl font-bold text-[#0f172a] mb-6 uppercase tracking-widest underline underline-offset-8">Execute {activeTab}</h3>
-                <input className="w-full bg-slate-50 p-4 border rounded mb-4 text-center font-bold text-sm outline-none focus:border-[#0f172a]" placeholder="Vault Destination Moniker" />
-                <input className="w-full bg-slate-50 p-4 border rounded mb-8 text-center text-3xl font-bold outline-none focus:border-[#0f172a]" placeholder="0.00" type="number" />
-                <button className="w-full bg-[#0f172a] text-white py-4 rounded font-bold uppercase text-[10px] tracking-widest hover:bg-emerald-600 transition-all">Submit Protocol</button>
+            <div className="max-w-md mx-auto py-12 px-6 border border-slate-100 bg-slate-50/50 text-center">
+                <h3 className="text-lg font-bold text-slate-900 mb-6 uppercase tracking-widest">Initiate {activeTab}</h3>
+                <input className="w-full border border-slate-200 p-3 rounded mb-4 text-sm outline-none focus:border-blue-600" placeholder="Destination / Account ID" />
+                <input className="w-full border border-slate-200 p-3 rounded mb-8 text-center text-3xl font-bold outline-none focus:border-blue-600" placeholder="0.00" type="number" />
+                <button className="w-full bg-[#002b5c] text-white py-4 rounded font-bold text-xs uppercase tracking-widest hover:bg-slate-800 transition-all">Submit Protocol</button>
             </div>
           )}
         </div>
       </div>
 
-      {/* Restriction Modal Standard */}
+      {/* Restriction Modal - No Blurs, Simple Overlay */}
       {restriction && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[2000] p-6">
-          <div className="bg-white text-[#0f172a] p-12 rounded-md max-w-md w-full text-center shadow-2xl relative border-t-8 border-rose-600">
-             <div className="w-16 h-16 bg-rose-50 text-rose-600 rounded-full flex items-center justify-center mx-auto mb-6 text-3xl font-black italic">!</div>
-             <h3 className="text-xl font-bold mb-3 uppercase tracking-tighter">{restriction.title}</h3>
-             <p className="text-slate-500 mb-10 text-sm italic">"{restriction.reason}"</p>
-             <button onClick={() => setRestriction(null)} className="w-full bg-[#0f172a] text-white py-3 rounded font-bold uppercase text-[10px] tracking-widest">Acknowledge</button>
+        <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-[2000] p-6">
+          <div className="bg-white p-10 border border-slate-200 max-w-sm w-full text-center shadow-lg">
+             <h3 className="text-xl font-bold mb-4 text-slate-900 uppercase tracking-tighter">{restriction.title}</h3>
+             <p className="text-slate-500 mb-8 text-sm italic leading-relaxed">"{restriction.reason}"</p>
+             <button onClick={() => setRestriction(null)} className="w-full bg-[#002b5c] text-white py-3 font-bold uppercase text-[10px] tracking-widest">Return</button>
           </div>
         </div>
       )}
