@@ -1,30 +1,40 @@
 @import "tailwindcss";
 
 :root {
-  --navy: #002147;
-  --emerald: #10b981;
+  --bank-brand: #002147;
+  --bank-success: #10b981;
+  --bank-error: #ef4444;
+  --bank-bg: #f8fafc;
 }
 
-@keyframes progress-slide {
-  0% { left: -100%; width: 20%; }
-  100% { left: 100%; width: 100%; }
-}
-.animate-progress {
-  position: absolute;
-  height: 3px;
-  background: var(--emerald);
-  animation: progress-slide 2s infinite linear;
+body {
+  background-color: var(--bank-bg);
+  color: #1e293b;
+  font-family: 'Inter', -apple-system, sans-serif;
+  letter-spacing: -0.01em;
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+/* Subtle Loading Line */
+.loading-bar {
+  height: 2px;
+  background: var(--bank-brand);
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9999;
+  animation: progress 2s ease-in-out infinite;
 }
-.animate-fadeIn { animation: fadeIn 0.4s ease-out forwards; }
 
-.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-
-@media print {
-  .print-hidden { display: none !important; }
-  .receipt-card { border: none !important; box-shadow: none !important; }
+@keyframes progress {
+  0% { width: 0%; left: 0; }
+  50% { width: 70%; left: 15%; }
+  100% { width: 0%; left: 100%; }
 }
+
+/* Mobile Bottom Nav Shadow */
+.mobile-nav {
+  box-shadow: 0 -2px 10px rgba(0,0,0,0.05);
+}
+
+/* Clean scroll for mobile */
+.hide-scrollbar::-webkit-scrollbar { display: none; }
