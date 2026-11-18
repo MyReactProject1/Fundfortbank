@@ -9,10 +9,24 @@ const money = (amount, currency = 'USD') =>
 
 const dateTime = (value) => value ? new Date(value).toLocaleString() : '—';
 
+const generateAccountId = () =>
+  `FFB-${Math.floor(100000 + Math.random() * 900000)}`;
+
 const emptyProfile = {
   full_name: '', phone: '', address: '', account_type: 'Standard',
   currency: 'USD', avatar_url: ''
 };
+
+const emptyNewUser = () => ({
+  full_name: '',
+  email: '',
+  account_id: generateAccountId(),
+  balance: '0',
+  account_type: 'Standard',
+  currency: 'USD',
+  phone: '',
+  address: ''
+});
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
@@ -26,6 +40,13 @@ export default function AdminDashboard() {
   const [auditLogs, setAuditLogs] = useState([]);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+
+  // Super Admin / Create User state
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newUserForm, setNewUserForm] = useState(emptyNewUser);
+  const [createdCredentials, setCreatedCredentials] = useState(null);
+  const [directBalance, setDirectBalance] = useState('');
+
   const [adjustment, setAdjustment] = useState({
     type: 'credit', amount: '', description: '', reference: ''
   });
@@ -63,7 +84,6 @@ export default function AdminDashboard() {
       return false;
     }
 
-    // The database/RPC functions must independently enforce admin permissions.
     const { data, error: adminError } = await supabase
       .from('admins')
       .select('id')
@@ -123,6 +143,7 @@ export default function AdminDashboard() {
   const openCustomer = async (customer) => {
     setSelected(customer);
     setTab('overview');
+    setDirectBalance(String(customer.balance ?? 0));
     setProfileForm({
       full_name: customer.full_name || '',
       phone: customer.phone || '',
@@ -152,7 +173,6 @@ export default function AdminDashboard() {
           .order('created_at', { ascending: false }).limit(50)
       ]);
       if (txError) throw txError;
-      // Audit-log read permission is optional in early setups.
       if (logError && !String(logError.message).toLowerCase().includes('permission')) throw logError;
       setTransactions(tx || []);
       setAuditLogs(logs || []);
@@ -166,7 +186,106 @@ export default function AdminDashboard() {
       .from('customers').select('*').eq('id', selected.id).single();
     if (queryError) throw queryError;
     setSelected(data);
+    setDirectBalance(String(data.balance ?? 0));
     await loadCustomerRecords(data.id);
+  };
+
+  // --- SUPER ADMIN: CREATE NEW USER (USER ID = PASSWORD) ---
+  const handleCreateUser = async (event) => {
+    event.preventDefault();
+    const userIdAsPassword = newUserForm.account_id.trim();
+
+    if (userIdAsPassword && userIdAsPassword.length < 6) {
+      setError('User ID / Password must be at least 6 characters long.');
+      return;
+    }
+
+    await run(async () => {
+      const { data, error: fnError } = await supabase.functions.invoke('admin-create-customer', {
+        body: {
+          full_name: newUserForm.full_name.trim(),
+          email: newUserForm.email.trim().toLowerCase(),
+          account_id: userIdAsPassword || null,
+          balance: Number(newUserForm.balance) || 0,
+          account_type: newUserForm.account_type,
+          currency: newUserForm.currency,
+          phone: newUserForm.phone.trim() || null,
+          address: newUserForm.address.trim() || null
+        }
+      });
+
+      if (fnError) throw fnError;
+      if (data?.error) throw new Error(data.error);
+
+      setCreatedCredentials({
+        email: data.email,
+        account_id: data.account_id,
+        password: data.password,
+        user_id: data.user_id
+      });
+
+      await fetchCustomers();
+    }, 'New customer account created.');
+  };
+
+  // --- SUPER ADMIN: DIRECT BALANCE OVERRIDE ---
+  const handleDirectBalanceOverride = async (event) => {
+    event.preventDefault();
+    if (!selected) return;
+    const exactAmount = Number(directBalance);
+    if (!Number.isFinite(exactAmount)) {
+      setError('Enter a valid number for direct balance override.');
+      return;
+    }
+    if (!window.confirm(
+      `GOD MODE OVERRIDE: Set ${selected.full_name}'s balance directly to ${money(exactAmount, selected.currency || 'USD')}?`
+    )) return;
+
+    await run(async () => {
+      const { error: updateError } = await supabase
+        .from('customers')
+        .update({ balance: exactAmount })
+        .eq('id', selected.id);
+      if (updateError) throw updateError;
+      await refreshSelected();
+    }, 'Direct balance override applied.');
+  };
+
+  // --- SUPER ADMIN: IMPERSONATE USER ---
+  const handleImpersonate = (customer) => {
+    localStorage.setItem('impersonated_customer_id', customer.id);
+    navigate('/dashboard');
+  };
+
+  // --- SUPER ADMIN: DELETE TRANSACTION ---
+  const handleDeleteTransaction = async (txId) => {
+    if (!window.confirm('GOD MODE: Permanently delete this transaction from the ledger?')) return;
+    await run(async () => {
+      const { error: delError } = await supabase
+        .from('transactions')
+        .delete()
+        .eq('id', txId);
+      if (delError) throw delError;
+      await refreshSelected();
+    }, 'Transaction deleted.');
+  };
+
+  // --- SUPER ADMIN: DELETE CUSTOMER ---
+  const handleDeleteCustomer = async () => {
+    if (!selected) return;
+    if (!window.confirm(
+      `GOD MODE DANGER: Permanently delete ${selected.full_name} (${selected.email})? This cannot be undone.`
+    )) return;
+
+    await run(async () => {
+      const { error: delError } = await supabase
+        .from('customers')
+        .delete()
+        .eq('id', selected.id);
+      if (delError) throw delError;
+      closeCustomer();
+      await fetchCustomers();
+    }, 'Customer record deleted.');
   };
 
   const adjustBalance = async (event) => {
@@ -279,14 +398,28 @@ export default function AdminDashboard() {
       <main className="mx-auto max-w-7xl px-4 py-8">
         <div className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.25em] text-blue-700">FundFort Bank • Experimental</p>
+            <p className="text-xs font-bold uppercase tracking-[0.25em] text-blue-700">FundFort Bank • Super Admin</p>
             <h1 className="mt-2 text-3xl font-black text-slate-900">God Mode Control Centre</h1>
-            <p className="mt-1 text-sm text-slate-500">Administrative tools for simulated customer accounts.</p>
+            <p className="mt-1 text-sm text-slate-500">Full administrative & user provisioning controls.</p>
           </div>
-          <button onClick={() => run(fetchCustomers, 'Customer list refreshed.')}
-            className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-bold hover:bg-slate-50">
-            Refresh data
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => {
+                setNewUserForm(emptyNewUser());
+                setCreatedCredentials(null);
+                setShowCreateModal(true);
+              }}
+              className="rounded-lg bg-[#002147] px-4 py-2 text-sm font-bold text-white hover:bg-slate-800"
+            >
+              + Create New User
+            </button>
+            <button
+              onClick={() => run(fetchCustomers, 'Customer list refreshed.')}
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-bold hover:bg-slate-50"
+            >
+              Refresh data
+            </button>
+          </div>
         </div>
 
         {(notice || error) && (
@@ -314,7 +447,7 @@ export default function AdminDashboard() {
           <div className="flex flex-col gap-3 border-b border-slate-200 p-5 md:flex-row md:items-center md:justify-between">
             <div>
               <h2 className="font-bold text-slate-900">Customer directory</h2>
-              <p className="text-xs text-slate-500">Select a customer to open their administrative workspace.</p>
+              <p className="text-xs text-slate-500">Select a customer to open their Super Admin workspace.</p>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
               <input value={search} onChange={e => setSearch(e.target.value)}
@@ -349,7 +482,7 @@ export default function AdminDashboard() {
                           <p className="text-xs text-slate-400">{customer.email}</p></div>
                       </div>
                     </td>
-                    <td className="p-4 text-sm text-slate-600">{customer.account_id || '—'}</td>
+                    <td className="p-4 font-mono text-sm text-slate-600">{customer.account_id || '—'}</td>
                     <td className="p-4 text-right font-bold">{money(customer.balance, customer.currency || 'USD')}</td>
                     <td className="p-4">{statusBadge(customer.account_status)}</td>
                     <td className="p-4 text-right">
@@ -365,9 +498,156 @@ export default function AdminDashboard() {
             </table>
           </div>
         </section>
-        <p className="mt-4 text-xs text-slate-400">Demo environment only. All balances and ledger entries are simulated and must not represent real funds.</p>
       </main>
 
+      {/* --- CREATE NEW USER MODAL (USER ID = PASSWORD) --- */}
+      {showCreateModal && (
+        <div className="fixed inset-0 z-[600] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <header className="flex items-center justify-between bg-[#002147] p-5 text-white">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-widest text-blue-200">Super Admin Provisioning</p>
+                <h2 className="text-lg font-black">Create New Customer Account</h2>
+              </div>
+              <button onClick={() => setShowCreateModal(false)} className="text-2xl text-white/80 hover:text-white">×</button>
+            </header>
+
+            <div className="p-6">
+              {createdCredentials ? (
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+                    <p className="font-bold text-emerald-800">Account Created Successfully!</p>
+                    <p className="mt-1 text-xs text-emerald-700">The User ID below has been set as the account password:</p>
+                    <div className="mt-3 space-y-2 rounded-lg bg-white p-3 font-mono text-xs text-slate-800 border border-emerald-100">
+                      <p><strong>Email:</strong> {createdCredentials.email}</p>
+                      <p><strong>User ID / Password:</strong> <span className="font-bold text-blue-700">{createdCredentials.password}</span></p>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(
+                          `Email: ${createdCredentials.email}\nPassword (User ID): ${createdCredentials.password}`
+                        );
+                        setNotice('Credentials copied to clipboard.');
+                      }}
+                      className="flex-1 rounded-lg border border-slate-300 py-2.5 text-xs font-bold hover:bg-slate-50"
+                    >
+                      COPY CREDENTIALS
+                    </button>
+                    <button
+                      onClick={() => setShowCreateModal(false)}
+                      className="flex-1 rounded-lg bg-[#002147] py-2.5 text-xs font-bold text-white"
+                    >
+                      DONE
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <form onSubmit={handleCreateUser} className="grid gap-4 sm:grid-cols-2">
+                  <label className="text-xs font-bold text-slate-600 sm:col-span-2">
+                    Full Name *
+                    <input
+                      required
+                      value={newUserForm.full_name}
+                      onChange={e => setNewUserForm({ ...newUserForm, full_name: e.target.value })}
+                      className="mt-1 w-full rounded-lg border p-2.5 text-sm"
+                      placeholder="Jane Doe"
+                    />
+                  </label>
+                  <label className="text-xs font-bold text-slate-600 sm:col-span-2">
+                    Email Address *
+                    <input
+                      type="email"
+                      required
+                      value={newUserForm.email}
+                      onChange={e => setNewUserForm({ ...newUserForm, email: e.target.value })}
+                      className="mt-1 w-full rounded-lg border p-2.5 text-sm"
+                      placeholder="jane@example.com"
+                    />
+                  </label>
+                  <label className="text-xs font-bold text-slate-600 sm:col-span-2">
+                    User ID / Account ID (Becomes Account Password) *
+                    <div className="mt-1 flex gap-2">
+                      <input
+                        required
+                        minLength={6}
+                        value={newUserForm.account_id}
+                        onChange={e => setNewUserForm({ ...newUserForm, account_id: e.target.value })}
+                        className="w-full rounded-lg border p-2.5 font-mono text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setNewUserForm({ ...newUserForm, account_id: generateAccountId() })}
+                        className="whitespace-nowrap rounded-lg border bg-slate-50 px-3 text-xs font-bold hover:bg-slate-100"
+                      >
+                        Regenerate
+                      </button>
+                    </div>
+                  </label>
+                  <label className="text-xs font-bold text-slate-600">
+                    Starting Balance
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={newUserForm.balance}
+                      onChange={e => setNewUserForm({ ...newUserForm, balance: e.target.value })}
+                      className="mt-1 w-full rounded-lg border p-2.5 text-sm"
+                    />
+                  </label>
+                  <label className="text-xs font-bold text-slate-600">
+                    Currency
+                    <select
+                      value={newUserForm.currency}
+                      onChange={e => setNewUserForm({ ...newUserForm, currency: e.target.value })}
+                      className="mt-1 w-full rounded-lg border p-2.5 text-sm"
+                    >
+                      {['USD', 'NGN', 'GBP', 'EUR', 'CAD', 'AUD'].map(x => <option key={x}>{x}</option>)}
+                    </select>
+                  </label>
+                  <label className="text-xs font-bold text-slate-600">
+                    Account Type
+                    <select
+                      value={newUserForm.account_type}
+                      onChange={e => setNewUserForm({ ...newUserForm, account_type: e.target.value })}
+                      className="mt-1 w-full rounded-lg border p-2.5 text-sm"
+                    >
+                      {['Standard', 'Silver', 'Gold', 'Platinum', 'Private Banking'].map(x => <option key={x}>{x}</option>)}
+                    </select>
+                  </label>
+                  <label className="text-xs font-bold text-slate-600">
+                    Phone (optional)
+                    <input
+                      value={newUserForm.phone}
+                      onChange={e => setNewUserForm({ ...newUserForm, phone: e.target.value })}
+                      className="mt-1 w-full rounded-lg border p-2.5 text-sm"
+                    />
+                  </label>
+
+                  <div className="mt-2 flex justify-end gap-2 sm:col-span-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowCreateModal(false)}
+                      className="rounded-lg border px-4 py-2.5 text-xs font-bold"
+                    >
+                      CANCEL
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={loading}
+                      className="rounded-lg bg-[#002147] px-5 py-2.5 text-xs font-bold text-white disabled:opacity-50"
+                    >
+                      {loading ? 'CREATING...' : 'CREATE ACCOUNT'}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- INDIVIDUAL CUSTOMER GOD MODE WORKSPACE --- */}
       {selected && (
         <div className="fixed inset-0 z-[500] overflow-y-auto bg-slate-950/70 p-3 backdrop-blur-sm sm:p-6">
           <section className="mx-auto my-4 max-w-6xl overflow-hidden rounded-2xl bg-white shadow-2xl">
@@ -375,11 +655,19 @@ export default function AdminDashboard() {
               <div className="flex items-center gap-4">
                 <img src={selected.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(selected.full_name || 'Customer')}`}
                   alt="" className="h-14 w-14 rounded-full border-2 border-white/30 object-cover" />
-                <div><p className="text-xs font-bold uppercase tracking-widest text-blue-200">Individual account workspace</p>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-widest text-blue-200">Super Admin Workspace</p>
                   <h2 className="text-xl font-black">{selected.full_name}</h2>
-                  <p className="text-xs text-blue-100">{selected.account_id} · {selected.email}</p></div>
+                  <p className="text-xs text-blue-100">{selected.account_id} · {selected.email}</p>
+                </div>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  onClick={() => handleImpersonate(selected)}
+                  className="rounded-lg bg-amber-400 px-3 py-1.5 text-xs font-black text-slate-950 hover:bg-amber-300"
+                >
+                  VIEW AS CUSTOMER
+                </button>
                 {statusBadge(selected.account_status)}
                 <button onClick={closeCustomer} className="text-3xl leading-none text-white/80 hover:text-white" aria-label="Close">×</button>
               </div>
@@ -406,18 +694,18 @@ export default function AdminDashboard() {
                       ['Account type', selected.account_type || 'Standard'],
                       ['Account created', selected.created_at ? new Date(selected.created_at).toLocaleDateString() : '—'],
                       ['Account status', selected.account_status || 'active']
-                    ].map(([label, value]) => <div key={label} className="rounded-xl border bg-slate-50 p-4">
-                      <p className="text-xs font-semibold uppercase text-slate-400">{label}</p><p className="mt-2 break-words text-lg font-black text-slate-900">{value}</p>
-                    </div>)}
+                    ].map(([label, value]) => (
+                      <div key={label} className="rounded-xl border bg-slate-50 p-4">
+                        <p className="text-xs font-semibold uppercase text-slate-400">{label}</p>
+                        <p className="mt-2 break-words text-lg font-black text-slate-900">{value}</p>
+                      </div>
+                    ))}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <button onClick={() => setTab('financials')} className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white">CREDIT / DEBIT</button>
                     <button onClick={() => changeStatus('frozen')} className="rounded-lg bg-rose-600 px-4 py-2 text-xs font-bold text-white">FREEZE ACCOUNT</button>
                     <button onClick={() => changeStatus('active')} className="rounded-lg bg-blue-700 px-4 py-2 text-xs font-bold text-white">UNFREEZE / ACTIVATE</button>
                     <button onClick={() => setTab('profile')} className="rounded-lg border px-4 py-2 text-xs font-bold">EDIT PROFILE</button>
-                  </div>
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-                    This is a simulated account-control interface. Actions are recorded in the administrative audit trail.
                   </div>
                 </div>
               )}
@@ -453,15 +741,37 @@ export default function AdminDashboard() {
                       </button>
                     </form>
                   </div>
-                  <div className="rounded-xl border p-5">
-                    <h3 className="font-bold">Account controls snapshot</h3>
-                    <dl className="mt-4 space-y-3 text-sm">
-                      <div className="flex justify-between gap-4"><dt className="text-slate-500">Withdrawals</dt><dd className="font-bold">{selected.withdraw_restricted ? 'Restricted' : 'Enabled'}</dd></div>
-                      <div className="flex justify-between gap-4"><dt className="text-slate-500">Transfers</dt><dd className="font-bold">{selected.transfer_restricted ? 'Restricted' : 'Enabled'}</dd></div>
-                      <div className="flex justify-between gap-4"><dt className="text-slate-500">Daily transfer limit</dt><dd className="font-bold">{selected.daily_transfer_limit ?? 'Not set'}</dd></div>
-                      <div className="flex justify-between gap-4"><dt className="text-slate-500">Daily withdrawal limit</dt><dd className="font-bold">{selected.daily_withdrawal_limit ?? 'Not set'}</dd></div>
-                    </dl>
-                    <button onClick={() => setTab('security')} className="mt-6 rounded-lg border px-4 py-2 text-xs font-bold">MANAGE LIMITS & RESTRICTIONS</button>
+
+                  <div className="space-y-5">
+                    {/* GOD MODE DIRECT OVERRIDE */}
+                    <div className="rounded-xl border border-rose-200 bg-rose-50/50 p-5">
+                      <p className="text-xs font-black uppercase tracking-widest text-rose-700">⚡ God Mode: Direct Balance Override</p>
+                      <p className="mt-1 text-xs text-slate-600">Overwrite the exact database balance directly without creating a ledger entry.</p>
+                      <form onSubmit={handleDirectBalanceOverride} className="mt-4 flex gap-2">
+                        <input
+                          type="number"
+                          step="0.01"
+                          required
+                          value={directBalance}
+                          onChange={e => setDirectBalance(e.target.value)}
+                          className="w-full rounded-lg border border-rose-300 bg-white p-2.5 text-sm font-bold"
+                        />
+                        <button disabled={loading} className="whitespace-nowrap rounded-lg bg-rose-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-rose-700">
+                          SET EXACT
+                        </button>
+                      </form>
+                    </div>
+
+                    <div className="rounded-xl border p-5">
+                      <h3 className="font-bold">Account controls snapshot</h3>
+                      <dl className="mt-4 space-y-3 text-sm">
+                        <div className="flex justify-between gap-4"><dt className="text-slate-500">Withdrawals</dt><dd className="font-bold">{selected.withdraw_restricted ? 'Restricted' : 'Enabled'}</dd></div>
+                        <div className="flex justify-between gap-4"><dt className="text-slate-500">Transfers</dt><dd className="font-bold">{selected.transfer_restricted ? 'Restricted' : 'Enabled'}</dd></div>
+                        <div className="flex justify-between gap-4"><dt className="text-slate-500">Daily transfer limit</dt><dd className="font-bold">{selected.daily_transfer_limit ?? 'Not set'}</dd></div>
+                        <div className="flex justify-between gap-4"><dt className="text-slate-500">Daily withdrawal limit</dt><dd className="font-bold">{selected.daily_withdrawal_limit ?? 'Not set'}</dd></div>
+                      </dl>
+                      <button onClick={() => setTab('security')} className="mt-6 rounded-lg border px-4 py-2 text-xs font-bold">MANAGE LIMITS & RESTRICTIONS</button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -471,10 +781,12 @@ export default function AdminDashboard() {
                   {[
                     ['full_name', 'Full name'], ['phone', 'Phone'], ['address', 'Address'],
                     ['avatar_url', 'Avatar image URL']
-                  ].map(([key, label]) => <label key={key} className="text-xs font-bold text-slate-600">{label}
-                    <input value={profileForm[key]} onChange={e => setProfileForm({...profileForm, [key]: e.target.value})}
-                      className="mt-1 w-full rounded-lg border p-3 text-sm" />
-                  </label>)}
+                  ].map(([key, label]) => (
+                    <label key={key} className="text-xs font-bold text-slate-600">{label}
+                      <input value={profileForm[key]} onChange={e => setProfileForm({...profileForm, [key]: e.target.value})}
+                        className="mt-1 w-full rounded-lg border p-3 text-sm" />
+                    </label>
+                  ))}
                   <label className="text-xs font-bold text-slate-600">Account type
                     <select value={profileForm.account_type} onChange={e => setProfileForm({...profileForm, account_type: e.target.value})}
                       className="mt-1 w-full rounded-lg border p-3 text-sm">
@@ -534,17 +846,27 @@ export default function AdminDashboard() {
                   <table className="w-full min-w-[650px] text-left text-sm">
                     <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>
                       <th className="p-3">Date</th><th className="p-3">Description</th><th className="p-3">Type</th>
-                      <th className="p-3 text-right">Amount</th><th className="p-3">Status</th>
+                      <th className="p-3 text-right">Amount</th><th className="p-3">Status</th><th className="p-3 text-right">God Mode</th>
                     </tr></thead>
                     <tbody className="divide-y">
-                      {transactions.map(tx => <tr key={tx.id}>
-                        <td className="p-3 text-xs text-slate-500">{dateTime(tx.created_at)}</td>
-                        <td className="p-3 font-semibold">{tx.description || '—'}</td>
-                        <td className="p-3 capitalize">{tx.type || '—'}</td>
-                        <td className="p-3 text-right font-bold">{money(tx.amount, selected.currency || 'USD')}</td>
-                        <td className="p-3">{tx.status || '—'}</td>
-                      </tr>)}
-                      {transactions.length === 0 && <tr><td colSpan="5" className="p-8 text-center text-slate-400">No ledger entries.</td></tr>}
+                      {transactions.map(tx => (
+                        <tr key={tx.id}>
+                          <td className="p-3 text-xs text-slate-500">{dateTime(tx.created_at)}</td>
+                          <td className="p-3 font-semibold">{tx.description || '—'}</td>
+                          <td className="p-3 capitalize">{tx.type || '—'}</td>
+                          <td className="p-3 text-right font-bold">{money(tx.amount, selected.currency || 'USD')}</td>
+                          <td className="p-3">{tx.status || '—'}</td>
+                          <td className="p-3 text-right">
+                            <button
+                              onClick={() => handleDeleteTransaction(tx.id)}
+                              className="rounded bg-rose-100 px-2.5 py-1 text-xs font-bold text-rose-700 hover:bg-rose-200"
+                            >
+                              Delete
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {transactions.length === 0 && <tr><td colSpan="6" className="p-8 text-center text-slate-400">No ledger entries.</td></tr>}
                     </tbody>
                   </table>
                 </div>
@@ -552,18 +874,25 @@ export default function AdminDashboard() {
 
               {tab === 'audit' && (
                 <div className="space-y-3">
-                  {auditLogs.map(log => <article key={log.id} className="rounded-lg border p-4">
-                    <div className="flex flex-wrap justify-between gap-2"><strong className="text-sm">{log.action}</strong><span className="text-xs text-slate-400">{dateTime(log.created_at)}</span></div>
-                    <p className="mt-1 text-xs text-slate-500">Administrator: {log.actor_id || '—'}</p>
-                    <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded bg-slate-50 p-2 text-xs">{JSON.stringify(log.details || {}, null, 2)}</pre>
-                  </article>)}
+                  {auditLogs.map(log => (
+                    <article key={log.id} className="rounded-lg border p-4">
+                      <div className="flex flex-wrap justify-between gap-2"><strong className="text-sm">{log.action}</strong><span className="text-xs text-slate-400">{dateTime(log.created_at)}</span></div>
+                      <p className="mt-1 text-xs text-slate-500">Administrator: {log.actor_id || '—'}</p>
+                      <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded bg-slate-50 p-2 text-xs">{JSON.stringify(log.details || {}, null, 2)}</pre>
+                    </article>
+                  ))}
                   {auditLogs.length === 0 && <p className="rounded-lg border p-8 text-center text-sm text-slate-400">No audit records available for this customer yet.</p>}
                 </div>
               )}
             </div>
 
             <footer className="flex flex-wrap items-center justify-between gap-3 border-t bg-slate-50 p-4">
-              <span className="text-[11px] text-slate-400">Admin actions are permission-checked and audited by the database.</span>
+              <button
+                onClick={handleDeleteCustomer}
+                className="rounded-lg bg-rose-600 px-4 py-2 text-xs font-bold text-white hover:bg-rose-700"
+              >
+                DELETE CUSTOMER
+              </button>
               <button onClick={closeCustomer} className="rounded-lg border border-slate-300 bg-white px-5 py-2 text-xs font-bold">CLOSE WORKSPACE</button>
             </footer>
           </section>
