@@ -500,25 +500,25 @@ export default function AdminDashboard() {
         </section>
       </main>
 
-      {/* --- CREATE NEW USER MODAL (USER ID = PASSWORD) --- */}
+      {/* --- CREATE NEW USER MODAL (SCROLLABLE, USER ID = PASSWORD) --- */}
       {showCreateModal && (
         <div className="fixed inset-0 z-[600] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
-            <header className="flex items-center justify-between bg-[#002147] p-5 text-white">
+          <div className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <header className="flex shrink-0 items-center justify-between bg-[#002147] p-5 text-white">
               <div>
                 <p className="text-xs font-bold uppercase tracking-widest text-blue-200">Super Admin Provisioning</p>
                 <h2 className="text-lg font-black">Create New Customer Account</h2>
               </div>
-              <button onClick={() => setShowCreateModal(false)} className="text-2xl text-white/80 hover:text-white">×</button>
+              <button onClick={() => setShowCreateModal(false)} className="text-2xl text-white/80 hover:text-white" aria-label="Close">×</button>
             </header>
 
-            <div className="p-6">
+            <div className="overflow-y-auto p-6">
               {createdCredentials ? (
                 <div className="space-y-4">
                   <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
                     <p className="font-bold text-emerald-800">Account Created Successfully!</p>
                     <p className="mt-1 text-xs text-emerald-700">The User ID below has been set as the account password:</p>
-                    <div className="mt-3 space-y-2 rounded-lg bg-white p-3 font-mono text-xs text-slate-800 border border-emerald-100">
+                    <div className="mt-3 space-y-2 rounded-lg border border-emerald-100 bg-white p-3 font-mono text-xs text-slate-800">
                       <p><strong>Email:</strong> {createdCredentials.email}</p>
                       <p><strong>User ID / Password:</strong> <span className="font-bold text-blue-700">{createdCredentials.password}</span></p>
                     </div>
@@ -544,7 +544,7 @@ export default function AdminDashboard() {
                   </div>
                 </div>
               ) : (
-                <form onSubmit={handleCreateUser} className="grid gap-4 sm:grid-cols-2">
+                <form onSubmit={handleCreateUser} className="grid gap-4 pb-2 sm:grid-cols-2">
                   <label className="text-xs font-bold text-slate-600 sm:col-span-2">
                     Full Name *
                     <input
@@ -620,6 +620,14 @@ export default function AdminDashboard() {
                     <input
                       value={newUserForm.phone}
                       onChange={e => setNewUserForm({ ...newUserForm, phone: e.target.value })}
+                      className="mt-1 w-full rounded-lg border p-2.5 text-sm"
+                    />
+                  </label>
+                  <label className="text-xs font-bold text-slate-600 sm:col-span-2">
+                    Address (optional)
+                    <input
+                      value={newUserForm.address}
+                      onChange={e => setNewUserForm({ ...newUserForm, address: e.target.value })}
                       className="mt-1 w-full rounded-lg border p-2.5 text-sm"
                     />
                   </label>
