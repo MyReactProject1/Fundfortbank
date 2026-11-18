@@ -76,6 +76,23 @@ export default function AdminDashboard() {
     }
   };
 
+  // --- HELPER: TRIGGER RESEND BANK ALERT ---
+  const sendBankAlert = async (payload) => {
+    try {
+      const { data, error: fnError } = await supabase.functions.invoke('send-bank-alert', {
+        body: payload
+      });
+      if (fnError || data?.error) {
+        console.warn('Email alert failed:', fnError?.message || data?.error);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.warn('Email alert exception:', err);
+      return false;
+    }
+  };
+
   const verifyAdmin = useCallback(async () => {
     const { data: { session }, error: sessionError } = await supabase.auth.getSession();
     if (sessionError) throw sessionError;
@@ -247,8 +264,15 @@ export default function AdminDashboard() {
         .update({ balance: exactAmount })
         .eq('id', selected.id);
       if (updateError) throw updateError;
+
+      await sendBankAlert({
+        customer_id: selected.id,
+        event_type: 'account_update',
+        description: 'Account balance updated'
+      });
+
       await refreshSelected();
-    }, 'Direct balance override applied.');
+    }, 'Direct balance override applied & email alert sent.');
   };
 
   // --- SUPER ADMIN: IMPERSONATE USER ---
@@ -305,6 +329,14 @@ export default function AdminDashboard() {
       `for ${selected.full_name}? This will create a permanent simulated ledger entry.`
     )) return;
 
+    const alertPayload = {
+      customer_id: selected.id,
+      event_type: adjustment.type,
+      amount,
+      description: adjustment.description.trim(),
+      reference: adjustment.reference.trim() || null
+    };
+
     await run(async () => {
       const { error: rpcError } = await supabase.rpc('admin_adjust_customer_balance', {
         p_customer_id: selected.id,
@@ -314,9 +346,12 @@ export default function AdminDashboard() {
         p_reference: adjustment.reference.trim() || null
       });
       if (rpcError) throw rpcError;
+
+      await sendBankAlert(alertPayload);
+
       setAdjustment({ type: 'credit', amount: '', description: '', reference: '' });
       await refreshSelected();
-    }, 'Balance adjustment recorded.');
+    }, 'Balance adjustment recorded & email alert sent.');
   };
 
   const saveProfile = async (event) => {
@@ -340,6 +375,8 @@ export default function AdminDashboard() {
   const saveControls = async (event) => {
     event.preventDefault();
     if (!selected) return;
+    const statusChanged = controlForm.account_status !== (selected.account_status || 'active');
+
     await run(async () => {
       const { error: rpcError } = await supabase.rpc('admin_update_customer_controls', {
         p_customer_id: selected.id,
@@ -352,8 +389,17 @@ export default function AdminDashboard() {
         p_daily_withdrawal_limit: controlForm.daily_withdrawal_limit === '' ? null : Number(controlForm.daily_withdrawal_limit)
       });
       if (rpcError) throw rpcError;
+
+      if (statusChanged) {
+        await sendBankAlert({
+          customer_id: selected.id,
+          event_type: 'status_change',
+          description: `Account status updated to ${controlForm.account_status.toUpperCase()}`
+        });
+      }
+
       await refreshSelected();
-    }, 'Account controls updated.');
+    }, statusChanged ? 'Account controls updated & status alert sent.' : 'Account controls updated.');
   };
 
   const changeStatus = async (status) => {
@@ -372,8 +418,15 @@ export default function AdminDashboard() {
         p_daily_withdrawal_limit: controlForm.daily_withdrawal_limit === '' ? null : Number(controlForm.daily_withdrawal_limit)
       });
       if (rpcError) throw rpcError;
+
+      await sendBankAlert({
+        customer_id: selected.id,
+        event_type: 'status_change',
+        description: `Account status changed to ${status.toUpperCase()}`
+      });
+
       await refreshSelected();
-    }, `Account status changed to ${status}.`);
+    }, `Account status changed to ${status} & email alert sent.`);
   };
 
   const closeCustomer = () => {
