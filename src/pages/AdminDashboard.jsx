@@ -9,9 +9,6 @@ const money = (amount, currency = 'USD') =>
 
 const dateTime = (value) => value ? new Date(value).toLocaleString() : '—';
 
-const generateAccountId = () =>
-  `FFB-${Math.floor(100000 + Math.random() * 900000)}`;
-
 const emptyProfile = {
   full_name: '', phone: '', address: '', account_type: 'Standard',
   currency: 'USD', avatar_url: ''
@@ -20,7 +17,6 @@ const emptyProfile = {
 const emptyNewUser = () => ({
   full_name: '',
   email: '',
-  account_id: generateAccountId(),
   balance: '0',
   account_type: 'Standard',
   currency: 'USD',
@@ -207,22 +203,14 @@ export default function AdminDashboard() {
     await loadCustomerRecords(data.id);
   };
 
-  // --- SUPER ADMIN: CREATE NEW USER (USER ID = PASSWORD) ---
+  // --- SUPER ADMIN: CREATE NEW USER (AUTO ACCOUNT NUMBER + OTP EMAIL) ---
   const handleCreateUser = async (event) => {
     event.preventDefault();
-    const userIdAsPassword = newUserForm.account_id.trim();
-
-    if (userIdAsPassword && userIdAsPassword.length < 6) {
-      setError('User ID / Password must be at least 6 characters long.');
-      return;
-    }
-
     await run(async () => {
       const { data, error: fnError } = await supabase.functions.invoke('admin-create-customer', {
         body: {
           full_name: newUserForm.full_name.trim(),
           email: newUserForm.email.trim().toLowerCase(),
-          account_id: userIdAsPassword || null,
           balance: Number(newUserForm.balance) || 0,
           account_type: newUserForm.account_type,
           currency: newUserForm.currency,
@@ -237,12 +225,11 @@ export default function AdminDashboard() {
       setCreatedCredentials({
         email: data.email,
         account_id: data.account_id,
-        password: data.password,
-        user_id: data.user_id
+        otp_sent: data.otp_sent
       });
 
       await fetchCustomers();
-    }, 'New customer account created.');
+    }, 'Customer created & OTP verification email sent.');
   };
 
   // --- SUPER ADMIN: DIRECT BALANCE OVERRIDE ---
@@ -504,7 +491,7 @@ export default function AdminDashboard() {
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
               <input value={search} onChange={e => setSearch(e.target.value)}
-                placeholder="Search name, email or account ID"
+                placeholder="Search name, email or account number"
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-700 sm:w-72" />
               <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
                 className="rounded-lg border border-slate-300 px-3 py-2 text-sm">
@@ -519,7 +506,7 @@ export default function AdminDashboard() {
             <table className="w-full min-w-[700px] text-left">
               <thead className="bg-slate-50 text-[10px] uppercase tracking-widest text-slate-500">
                 <tr>
-                  <th className="p-4">Customer</th><th className="p-4">Account ID</th>
+                  <th className="p-4">Customer</th><th className="p-4">Account Number</th>
                   <th className="p-4 text-right">Simulated balance</th><th className="p-4">Status</th>
                   <th className="p-4 text-right">Action</th>
                 </tr>
@@ -553,7 +540,7 @@ export default function AdminDashboard() {
         </section>
       </main>
 
-      {/* --- CREATE NEW USER MODAL (SCROLLABLE, USER ID = PASSWORD) --- */}
+      {/* --- CREATE NEW USER MODAL (SCROLLABLE, AUTO ACCOUNT NUMBER + OTP) --- */}
       {showCreateModal && (
         <div className="fixed inset-0 z-[600] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
           <div className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
@@ -570,23 +557,27 @@ export default function AdminDashboard() {
                 <div className="space-y-4">
                   <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
                     <p className="font-bold text-emerald-800">Account Created Successfully!</p>
-                    <p className="mt-1 text-xs text-emerald-700">The User ID below has been set as the account password:</p>
+                    <p className="mt-1 text-xs text-emerald-700">
+                      {createdCredentials.otp_sent
+                        ? 'A 6-digit OTP verification email has been sent to the customer.'
+                        : 'Account created, but the OTP email could not be sent.'}
+                    </p>
                     <div className="mt-3 space-y-2 rounded-lg border border-emerald-100 bg-white p-3 font-mono text-xs text-slate-800">
                       <p><strong>Email:</strong> {createdCredentials.email}</p>
-                      <p><strong>User ID / Password:</strong> <span className="font-bold text-blue-700">{createdCredentials.password}</span></p>
+                      <p><strong>Account Number:</strong> <span className="font-bold text-blue-700">{createdCredentials.account_id}</span></p>
                     </div>
                   </div>
                   <div className="flex gap-2">
                     <button
                       onClick={() => {
                         navigator.clipboard.writeText(
-                          `Email: ${createdCredentials.email}\nPassword (User ID): ${createdCredentials.password}`
+                          `Email: ${createdCredentials.email}\nAccount Number: ${createdCredentials.account_id}`
                         );
-                        setNotice('Credentials copied to clipboard.');
+                        setNotice('Account details copied to clipboard.');
                       }}
                       className="flex-1 rounded-lg border border-slate-300 py-2.5 text-xs font-bold hover:bg-slate-50"
                     >
-                      COPY CREDENTIALS
+                      COPY DETAILS
                     </button>
                     <button
                       onClick={() => setShowCreateModal(false)}
@@ -598,6 +589,9 @@ export default function AdminDashboard() {
                 </div>
               ) : (
                 <form onSubmit={handleCreateUser} className="grid gap-4 pb-2 sm:grid-cols-2">
+                  <p className="rounded-lg bg-blue-50 p-3 text-xs text-blue-800 sm:col-span-2">
+                    Supabase will automatically generate a unique 10-digit account number and send a 6-digit OTP verification email to the customer.
+                  </p>
                   <label className="text-xs font-bold text-slate-600 sm:col-span-2">
                     Full Name *
                     <input
@@ -618,25 +612,6 @@ export default function AdminDashboard() {
                       className="mt-1 w-full rounded-lg border p-2.5 text-sm"
                       placeholder="jane@example.com"
                     />
-                  </label>
-                  <label className="text-xs font-bold text-slate-600 sm:col-span-2">
-                    User ID / Account ID (Becomes Account Password) *
-                    <div className="mt-1 flex gap-2">
-                      <input
-                        required
-                        minLength={6}
-                        value={newUserForm.account_id}
-                        onChange={e => setNewUserForm({ ...newUserForm, account_id: e.target.value })}
-                        className="w-full rounded-lg border p-2.5 font-mono text-sm"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setNewUserForm({ ...newUserForm, account_id: generateAccountId() })}
-                        className="whitespace-nowrap rounded-lg border bg-slate-50 px-3 text-xs font-bold hover:bg-slate-100"
-                      >
-                        Regenerate
-                      </button>
-                    </div>
                   </label>
                   <label className="text-xs font-bold text-slate-600">
                     Starting Balance
