@@ -29,6 +29,7 @@ export default function UserDashboard() {
         return;
       }
 
+      // Check for Super Admin Impersonation first
       const impersonatedId = localStorage.getItem('impersonated_customer_id');
       if (impersonatedId) {
         const { data: adminRow } = await supabase
@@ -44,6 +45,18 @@ export default function UserDashboard() {
         } else {
           localStorage.removeItem('impersonated_customer_id');
         }
+      }
+
+      // Security Guard 1: Force password reset if user logged in with an admin temporary password
+      if (session.user?.user_metadata?.must_change_password) {
+        navigate('/login?mode=force-reset');
+        return;
+      }
+
+      // Security Guard 2: Force essential records completion if self-registered user skipped Step 3
+      if (session.user?.user_metadata?.profile_completed === false) {
+        navigate('/login?mode=complete-profile');
+        return;
       }
 
       fetchUserData(session.user.id);
@@ -87,7 +100,10 @@ export default function UserDashboard() {
 
     setPwLoading(true);
     try {
-      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      const { error } = await supabase.auth.updateUser({
+        password: newPassword,
+        data: { must_change_password: false }
+      });
       if (error) throw error;
       setNewPassword('');
       setConfirmPassword('');
