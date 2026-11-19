@@ -12,20 +12,17 @@ const dateTime = (value) => value ? new Date(value).toLocaleString() : '—';
 const isValidEmail = (value) =>
   /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(String(value || '').trim());
 
+const generateTempPassword = () => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let part = '';
+  for (let i = 0; i < 8; i++) part += chars[Math.floor(Math.random() * chars.length)];
+  return `FFB-${part}!`;
+};
+
 const emptyProfile = {
   full_name: '', phone: '', address: '', account_type: 'Standard',
   currency: 'USD', avatar_url: ''
 };
-
-const emptyNewUser = () => ({
-  full_name: '',
-  email: '',
-  balance: '0',
-  account_type: 'Standard',
-  currency: 'USD',
-  phone: '',
-  address: ''
-});
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
@@ -40,9 +37,13 @@ export default function AdminDashboard() {
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
 
-  // Super Admin / Create User state
+  // Global Signup Lock state
+  const [allowPublicSignup, setAllowPublicSignup] = useState(true);
+
+  // Unified Create User Modal state (Email + Password)
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [newUserForm, setNewUserForm] = useState(emptyNewUser);
+  const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
   const [createdCredentials, setCreatedCredentials] = useState(null);
   const [modalError, setModalError] = useState('');
   const [directBalance, setDirectBalance] = useState('');
@@ -58,7 +59,8 @@ export default function AdminDashboard() {
     transfer_restricted: false,
     transfer_reason: '',
     daily_transfer_limit: '',
-    daily_withdrawal_limit: ''
+    daily_withdrawal_limit: '',
+    profile_edit_locked: false
   });
 
   const run = async (task, successMessage = '') => {
@@ -76,7 +78,6 @@ export default function AdminDashboard() {
     }
   };
 
-  // --- HELPER: TRIGGER RESEND BANK ALERT ---
   const sendBankAlert = async (payload) => {
     try {
       const { data, error: fnError } = await supabase.functions.invoke('send-bank-alert', {
@@ -125,16 +126,38 @@ export default function AdminDashboard() {
     setCustomers(data || []);
   }, []);
 
+  const fetchAppSettings = useCallback(async () => {
+    const { data } = await supabase
+      .from('app_settings')
+      .select('value')
+      .eq('key', 'allow_public_signup')
+      .maybeSingle();
+    if (data) setAllowPublicSignup(Boolean(data.value));
+  }, []);
+
   useEffect(() => {
     (async () => {
       try {
         const isAdmin = await verifyAdmin();
-        if (isAdmin) await fetchCustomers();
+        if (isAdmin) {
+          await Promise.all([fetchCustomers(), fetchAppSettings()]);
+        }
       } catch (err) {
         setError(err.message || 'Could not verify administrator access.');
       }
     })();
-  }, [verifyAdmin, fetchCustomers]);
+  }, [verifyAdmin, fetchCustomers, fetchAppSettings]);
+
+  const togglePublicSignup = async () => {
+    const nextValue = !allowPublicSignup;
+    await run(async () => {
+      const { error: upsertError } = await supabase
+        .from('app_settings')
+        .upsert({ key: 'allow_public_signup', value: nextValue, updated_at: new Date().toISOString() });
+      if (upsertError) throw upsertError;
+      setAllowPublicSignup(nextValue);
+    }, nextValue ? 'Public account creation UNLOCKED.' : 'Public account creation LOCKED.');
+  };
 
   const filteredCustomers = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -176,7 +199,8 @@ export default function AdminDashboard() {
       transfer_restricted: Boolean(customer.transfer_restricted),
       transfer_reason: customer.transfer_reason || '',
       daily_transfer_limit: customer.daily_transfer_limit ?? '',
-      daily_withdrawal_limit: customer.daily_withdrawal_limit ?? ''
+      daily_withdrawal_limit: customer.daily_withdrawal_limit ?? '',
+      profile_edit_locked: Boolean(customer.profile_edit_locked)
     });
     await loadCustomerRecords(customer.id);
   };
@@ -207,19 +231,18 @@ export default function AdminDashboard() {
     await loadCustomerRecords(data.id);
   };
 
-  // --- SUPER ADMIN: CREATE NEW USER (STRICT EMAIL + MANDATORY OTP + TEMP PASSWORD) ---
+  // --- UNIFIED CREATE USER (EMAIL + TEMP PASSWORD -> OTP -> APPEARS ONLY AFTER OTP) ---
   const handleCreateUser = async (event) => {
     event.preventDefault();
     setModalError('');
 
-    if (!newUserForm.full_name.trim()) {
-      setModalError('Please enter the customer’s full name.');
+    const cleanEmail = newUserEmail.trim().toLowerCase();
+    if (!isValidEmail(cleanEmail)) {
+      setModalError('Invalid email address. Please enter a real, valid email.');
       return;
     }
-
-    const cleanEmail = newUserForm.email.trim().toLowerCase();
-    if (!isValidEmail(cleanEmail)) {
-      setModalError('Invalid email address. Please enter a real, valid email (e.g., name@domain.com).');
+    if (newUserPassword.length < 6) {
+      setModalError('Temporary password must be at least 6 characters.');
       return;
     }
 
@@ -229,13 +252,8 @@ export default function AdminDashboard() {
     try {
       const { data, error: fnError } = await supabase.functions.invoke('admin-create-customer', {
         body: {
-          full_name: newUserForm.full_name.trim(),
           email: cleanEmail,
-          balance: Number(newUserForm.balance) || 0,
-          account_type: newUserForm.account_type,
-          currency: newUserForm.currency,
-          phone: newUserForm.phone.trim() || null,
-          address: newUserForm.address.trim() || null
+          password: newUserPassword
         }
       });
 
@@ -244,13 +262,9 @@ export default function AdminDashboard() {
 
       setCreatedCredentials({
         email: data.email,
-        account_id: data.account_id || 'Pending OTP Verification',
-        temp_password: data.temp_password,
-        otp_sent: data.otp_sent
+        temp_password: data.temp_password
       });
-
-      setNotice('Pending account created & 6-digit OTP email sent.');
-      await fetchCustomers();
+      setNotice('OTP sent! Account will appear in God Mode once the user verifies their OTP.');
     } catch (err) {
       console.error(err);
       setModalError(err?.message || 'Could not create account.');
@@ -259,7 +273,6 @@ export default function AdminDashboard() {
     }
   };
 
-  // --- SUPER ADMIN: DIRECT BALANCE OVERRIDE ---
   const handleDirectBalanceOverride = async (event) => {
     event.preventDefault();
     if (!selected) return;
@@ -289,13 +302,11 @@ export default function AdminDashboard() {
     }, 'Direct balance override applied & email alert sent.');
   };
 
-  // --- SUPER ADMIN: IMPERSONATE USER ---
   const handleImpersonate = (customer) => {
     localStorage.setItem('impersonated_customer_id', customer.id);
     navigate('/dashboard');
   };
 
-  // --- SUPER ADMIN: DELETE TRANSACTION ---
   const handleDeleteTransaction = async (txId) => {
     if (!window.confirm('GOD MODE: Permanently delete this transaction from the ledger?')) return;
     await run(async () => {
@@ -308,7 +319,6 @@ export default function AdminDashboard() {
     }, 'Transaction deleted.');
   };
 
-  // --- SUPER ADMIN: DELETE CUSTOMER ---
   const handleDeleteCustomer = async () => {
     if (!selected) return;
     if (!window.confirm(
@@ -404,6 +414,13 @@ export default function AdminDashboard() {
       });
       if (rpcError) throw rpcError;
 
+      // Save per-user profile edit lock
+      const { error: lockError } = await supabase
+        .from('customers')
+        .update({ profile_edit_locked: controlForm.profile_edit_locked })
+        .eq('id', selected.id);
+      if (lockError) throw lockError;
+
       if (statusChanged) {
         await sendBankAlert({
           customer_id: selected.id,
@@ -471,8 +488,19 @@ export default function AdminDashboard() {
           </div>
           <div className="flex flex-wrap gap-2">
             <button
+              onClick={togglePublicSignup}
+              className={`rounded-lg px-4 py-2 text-xs font-bold transition ${
+                allowPublicSignup
+                  ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                  : 'bg-rose-600 text-white hover:bg-rose-700'
+              }`}
+            >
+              {allowPublicSignup ? '🔓 Public Signup: UNLOCKED' : '🔒 Public Signup: LOCKED'}
+            </button>
+            <button
               onClick={() => {
-                setNewUserForm(emptyNewUser());
+                setNewUserEmail('');
+                setNewUserPassword(generateTempPassword());
                 setCreatedCredentials(null);
                 setModalError('');
                 setShowCreateModal(true);
@@ -568,14 +596,14 @@ export default function AdminDashboard() {
         </section>
       </main>
 
-      {/* --- CREATE NEW USER MODAL (SCROLLABLE, STRICT EMAIL, MANDATORY OTP + TEMP PASSWORD) --- */}
+      {/* --- UNIFIED CREATE ACCOUNT MODAL (EMAIL + TEMP PASSWORD -> OTP) --- */}
       {showCreateModal && (
         <div className="fixed inset-0 z-[600] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
-          <div className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+          <div className="flex max-h-[90vh] w-full max-w-md flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
             <header className="flex shrink-0 items-center justify-between bg-[#002147] p-5 text-white">
               <div>
-                <p className="text-xs font-bold uppercase tracking-widest text-blue-200">Super Admin Provisioning</p>
-                <h2 className="text-lg font-black">Create New Customer Account</h2>
+                <p className="text-xs font-bold uppercase tracking-widest text-blue-200">Unified Account Creation</p>
+                <h2 className="text-lg font-black">Create New Account</h2>
               </div>
               <button onClick={() => setShowCreateModal(false)} className="text-2xl text-white/80 hover:text-white" aria-label="Close">×</button>
             </header>
@@ -590,21 +618,20 @@ export default function AdminDashboard() {
               {createdCredentials ? (
                 <div className="space-y-4">
                   <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
-                    <p className="font-bold text-emerald-800">OTP Sent — Pending User Verification</p>
+                    <p className="font-bold text-emerald-800">OTP Sent — Waiting for User Verification</p>
                     <p className="mt-1 text-xs text-emerald-700">
-                      Share the temporary password below with the customer. They must verify their 6-digit email OTP first, and will be forced to set a new password on first login.
+                      This account will appear in God Mode only after the user submits their OTP, resets their temporary password, and completes their profile.
                     </p>
                     <div className="mt-3 space-y-2 rounded-lg border border-emerald-100 bg-white p-3 font-mono text-xs text-slate-800">
                       <p><strong>Email:</strong> {createdCredentials.email}</p>
                       <p><strong>Temporary Password:</strong> <span className="font-bold text-rose-600">{createdCredentials.temp_password}</span></p>
-                      <p><strong>Account Number:</strong> <span className="font-bold text-amber-700">{createdCredentials.account_id}</span></p>
                     </div>
                   </div>
                   <div className="flex gap-2">
                     <button
                       onClick={() => {
                         navigator.clipboard.writeText(
-                          `FundFort Bank Account Details\nEmail: ${createdCredentials.email}\nTemporary Password: ${createdCredentials.temp_password}\nNote: Verify the 6-digit OTP sent to your email first, then reset your password upon login.`
+                          `FundFort Bank Account\nEmail: ${createdCredentials.email}\nTemporary Password: ${createdCredentials.temp_password}\nStep 1: Verify the OTP sent to your email.\nStep 2: Set your new password & complete your profile.`
                         );
                         setNotice('Onboarding credentials copied to clipboard.');
                       }}
@@ -621,82 +648,46 @@ export default function AdminDashboard() {
                   </div>
                 </div>
               ) : (
-                <form onSubmit={handleCreateUser} noValidate className="grid gap-4 pb-2 sm:grid-cols-2">
-                  <p className="rounded-lg bg-blue-50 p-3 text-xs text-blue-800 sm:col-span-2">
-                    A 6-digit OTP will be emailed to the customer and a temporary password will be generated. Their 10-digit account number is created only after OTP verification.
+                <form onSubmit={handleCreateUser} noValidate className="space-y-4">
+                  <p className="rounded-lg bg-blue-50 p-3 text-xs text-blue-800">
+                    Enter the user&apos;s email and a temporary password. An OTP will be sent immediately—the account will only appear in God Mode after OTP verification.
                   </p>
-                  <label className="text-xs font-bold text-slate-600 sm:col-span-2">
-                    Full Name *
-                    <input
-                      required
-                      value={newUserForm.full_name}
-                      onChange={e => setNewUserForm({ ...newUserForm, full_name: e.target.value })}
-                      className="mt-1 w-full rounded-lg border p-2.5 text-sm"
-                      placeholder="Jane Doe"
-                    />
-                  </label>
-                  <label className="text-xs font-bold text-slate-600 sm:col-span-2">
+                  <label className="block text-xs font-bold text-slate-600">
                     Email Address *
                     <input
                       type="email"
                       required
-                      value={newUserForm.email}
+                      value={newUserEmail}
                       onChange={e => {
                         setModalError('');
-                        setNewUserForm({ ...newUserForm, email: e.target.value });
+                        setNewUserEmail(e.target.value);
                       }}
                       className="mt-1 w-full rounded-lg border p-2.5 text-sm"
-                      placeholder="jane@example.com"
+                      placeholder="name@email.com"
                     />
                   </label>
-                  <label className="text-xs font-bold text-slate-600">
-                    Starting Balance
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={newUserForm.balance}
-                      onChange={e => setNewUserForm({ ...newUserForm, balance: e.target.value })}
-                      className="mt-1 w-full rounded-lg border p-2.5 text-sm"
-                    />
-                  </label>
-                  <label className="text-xs font-bold text-slate-600">
-                    Currency
-                    <select
-                      value={newUserForm.currency}
-                      onChange={e => setNewUserForm({ ...newUserForm, currency: e.target.value })}
-                      className="mt-1 w-full rounded-lg border p-2.5 text-sm"
-                    >
-                      {['USD', 'NGN', 'GBP', 'EUR', 'CAD', 'AUD'].map(x => <option key={x}>{x}</option>)}
-                    </select>
-                  </label>
-                  <label className="text-xs font-bold text-slate-600">
-                    Account Type
-                    <select
-                      value={newUserForm.account_type}
-                      onChange={e => setNewUserForm({ ...newUserForm, account_type: e.target.value })}
-                      className="mt-1 w-full rounded-lg border p-2.5 text-sm"
-                    >
-                      {['Standard', 'Silver', 'Gold', 'Platinum', 'Private Banking'].map(x => <option key={x}>{x}</option>)}
-                    </select>
-                  </label>
-                  <label className="text-xs font-bold text-slate-600">
-                    Phone (optional)
-                    <input
-                      value={newUserForm.phone}
-                      onChange={e => setNewUserForm({ ...newUserForm, phone: e.target.value })}
-                      className="mt-1 w-full rounded-lg border p-2.5 text-sm"
-                    />
-                  </label>
-                  <label className="text-xs font-bold text-slate-600 sm:col-span-2">
-                    Address (optional)
-                    <input
-                      value={newUserForm.address}
-                      onChange={e => setNewUserForm({ ...newUserForm, address: e.target.value })}
-                      className="mt-1 w-full rounded-lg border p-2.5 text-sm"
-                    />
+                  <label className="block text-xs font-bold text-slate-600">
+                    Temporary Password *
+                    <div className="mt-1 flex gap-2">
+                      <input
+                        type="text"
+                        required
+                        minLength={6}
+                        value={newUserPassword}
+                        onChange={e => setNewUserPassword(e.target.value)}
+                        className="w-full rounded-lg border p-2.5 font-mono text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setNewUserPassword(generateTempPassword())}
+                        className="whitespace-nowrap rounded-lg border bg-slate-50 px-3 text-xs font-bold hover:bg-slate-100"
+                      >
+                        Regenerate
+                      </button>
+                    </div>
                   </label>
 
-                  <div className="mt-2 flex justify-end gap-2 sm:col-span-2">
+                  <div className="mt-2 flex justify-end gap-2">
                     <button
                       type="button"
                       onClick={() => setShowCreateModal(false)}
@@ -709,7 +700,7 @@ export default function AdminDashboard() {
                       disabled={loading}
                       className="rounded-lg bg-[#002147] px-5 py-2.5 text-xs font-bold text-white disabled:opacity-50"
                     >
-                      {loading ? 'SENDING OTP...' : 'CREATE & SEND OTP'}
+                      {loading ? 'SENDING OTP...' : 'CONTINUE & SEND OTP'}
                     </button>
                   </div>
                 </form>
@@ -815,7 +806,6 @@ export default function AdminDashboard() {
                   </div>
 
                   <div className="space-y-5">
-                    {/* GOD MODE DIRECT OVERRIDE */}
                     <div className="rounded-xl border border-rose-200 bg-rose-50/50 p-5">
                       <p className="text-xs font-black uppercase tracking-widest text-rose-700">⚡ God Mode: Direct Balance Override</p>
                       <p className="mt-1 text-xs text-slate-600">Overwrite the exact database balance directly without creating a ledger entry.</p>
@@ -839,8 +829,8 @@ export default function AdminDashboard() {
                       <dl className="mt-4 space-y-3 text-sm">
                         <div className="flex justify-between gap-4"><dt className="text-slate-500">Withdrawals</dt><dd className="font-bold">{selected.withdraw_restricted ? 'Restricted' : 'Enabled'}</dd></div>
                         <div className="flex justify-between gap-4"><dt className="text-slate-500">Transfers</dt><dd className="font-bold">{selected.transfer_restricted ? 'Restricted' : 'Enabled'}</dd></div>
+                        <div className="flex justify-between gap-4"><dt className="text-slate-500">Profile edits</dt><dd className="font-bold">{selected.profile_edit_locked ? 'Locked' : 'Unlocked'}</dd></div>
                         <div className="flex justify-between gap-4"><dt className="text-slate-500">Daily transfer limit</dt><dd className="font-bold">{selected.daily_transfer_limit ?? 'Not set'}</dd></div>
-                        <div className="flex justify-between gap-4"><dt className="text-slate-500">Daily withdrawal limit</dt><dd className="font-bold">{selected.daily_withdrawal_limit ?? 'Not set'}</dd></div>
                       </dl>
                       <button onClick={() => setTab('security')} className="mt-6 rounded-lg border px-4 py-2 text-xs font-bold">MANAGE LIMITS & RESTRICTIONS</button>
                     </div>
@@ -883,6 +873,16 @@ export default function AdminDashboard() {
                       <option value="active">Active</option><option value="restricted">Restricted</option><option value="frozen">Frozen</option>
                     </select>
                   </label>
+                  <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-4">
+                    <label className="flex items-center justify-between gap-3 text-sm font-bold text-amber-900">
+                      Lock user profile edits
+                      <input type="checkbox" checked={controlForm.profile_edit_locked}
+                        onChange={e => setControlForm({...controlForm, profile_edit_locked: e.target.checked})} />
+                    </label>
+                    <p className="mt-2 text-xs text-amber-800">
+                      When locked, this customer cannot edit their name, phone, or address in their dashboard.
+                    </p>
+                  </div>
                   <div className="rounded-lg border p-4">
                     <label className="flex items-center justify-between gap-3 text-sm font-bold">Restrict withdrawals
                       <input type="checkbox" checked={controlForm.withdraw_restricted}
