@@ -15,6 +15,11 @@ export default function UserDashboard() {
   const [restriction, setRestriction] = useState(null);
   const [isImpersonating, setIsImpersonating] = useState(false);
 
+  // Basic Profile Edit state
+  const [editForm, setEditForm] = useState({ full_name: '', phone: '', address: '' });
+  const [editLoading, setEditLoading] = useState(false);
+  const [editMessage, setEditMessage] = useState({ type: '', text: '' });
+
   // Change Password state
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -29,7 +34,6 @@ export default function UserDashboard() {
         return;
       }
 
-      // Check for Super Admin Impersonation first
       const impersonatedId = localStorage.getItem('impersonated_customer_id');
       if (impersonatedId) {
         const { data: adminRow } = await supabase
@@ -47,13 +51,11 @@ export default function UserDashboard() {
         }
       }
 
-      // Security Guard 1: Force password reset if user logged in with an admin temporary password
       if (session.user?.user_metadata?.must_change_password) {
         navigate('/login?mode=force-reset');
         return;
       }
 
-      // Security Guard 2: Force essential records completion if self-registered user skipped Step 3
       if (session.user?.user_metadata?.profile_completed === false) {
         navigate('/login?mode=complete-profile');
         return;
@@ -70,7 +72,15 @@ export default function UserDashboard() {
       .select('*')
       .eq('id', userId)
       .single();
-    setProfile(cust);
+
+    if (cust) {
+      setProfile(cust);
+      setEditForm({
+        full_name: cust.full_name || '',
+        phone: cust.phone || '',
+        address: cust.address || ''
+      });
+    }
 
     const { data: trans } = await supabase
       .from('transactions')
@@ -83,6 +93,36 @@ export default function UserDashboard() {
   const handleExitImpersonation = () => {
     localStorage.removeItem('impersonated_customer_id');
     navigate('/admin');
+  };
+
+  const handleSaveBasicInfo = async (e) => {
+    e.preventDefault();
+    setEditMessage({ type: '', text: '' });
+
+    if (profile?.profile_edit_locked) {
+      setEditMessage({ type: 'error', text: 'Profile editing is currently locked by the administrator.' });
+      return;
+    }
+
+    setEditLoading(true);
+    try {
+      const { error } = await supabase
+        .from('customers')
+        .update({
+          full_name: editForm.full_name.trim(),
+          phone: editForm.phone.trim() || null,
+          address: editForm.address.trim() || null
+        })
+        .eq('id', profile.id);
+
+      if (error) throw error;
+      await fetchUserData(profile.id);
+      setEditMessage({ type: 'success', text: 'Account information updated successfully!' });
+    } catch (err) {
+      setEditMessage({ type: 'error', text: err.message || 'Could not update account information.' });
+    } finally {
+      setEditLoading(false);
+    }
   };
 
   const handleChangePassword = async (e) => {
@@ -140,7 +180,6 @@ export default function UserDashboard() {
 
   return (
     <div className="min-h-screen bg-slate-50 pb-32 md:pb-10 font-sans">
-      {/* Super Admin Impersonation Banner */}
       {isImpersonating && (
         <div className="bg-amber-400 text-slate-950 px-4 py-2.5 text-xs font-bold flex items-center justify-between gap-3">
           <span>⚡ SUPER ADMIN VIEW: Impersonating {profile.full_name} ({profile.email})</span>
@@ -156,7 +195,6 @@ export default function UserDashboard() {
       <Navbar userType={isImpersonating ? 'Super Admin (Viewing Customer)' : 'Standard User'} />
 
       <main className="max-w-xl mx-auto px-4 pt-6 md:pt-10">
-        {/* User Greeting */}
         <header className="flex justify-between items-center mb-8 px-2">
           <div>
             <h1 className="text-2xl font-bold text-slate-900 leading-tight">Hello, {firstName}</h1>
@@ -180,15 +218,11 @@ export default function UserDashboard() {
         </header>
 
         {activeTab === 'more' ? (
-          /* --- SETTINGS & CHANGE PASSWORD VIEW --- */
           <div className="space-y-6">
+            {/* Account Summary */}
             <section className="bg-white rounded-3xl p-6 border border-slate-100 shadow-sm">
-              <h3 className="font-bold text-slate-900 mb-4">Account Details</h3>
+              <h3 className="font-bold text-slate-900 mb-4">Account Summary</h3>
               <dl className="space-y-3 text-sm">
-                <div className="flex justify-between">
-                  <dt className="text-slate-500">Full Name</dt>
-                  <dd className="font-semibold text-slate-900">{profile.full_name}</dd>
-                </div>
                 <div className="flex justify-between">
                   <dt className="text-slate-500">Email</dt>
                   <dd className="font-semibold text-slate-900">{profile.email}</dd>
@@ -204,6 +238,76 @@ export default function UserDashboard() {
               </dl>
             </section>
 
+            {/* Basic Account Information Edit */}
+            <section className="bg-white rounded-3xl p-6 border border-slate-100 shadow-sm">
+              <div className="flex items-center justify-between mb-1">
+                <h3 className="font-bold text-slate-900">Edit Basic Information</h3>
+                {profile.profile_edit_locked && (
+                  <span className="rounded-full bg-rose-100 px-2.5 py-0.5 text-[10px] font-bold uppercase text-rose-700">
+                    🔒 Locked by Admin
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 mb-5">
+                {profile.profile_edit_locked
+                  ? 'Profile editing has been locked by the administrator.'
+                  : 'Update your name, phone number, or residential address.'}
+              </p>
+
+              {editMessage.text && (
+                <div
+                  className={`mb-4 rounded-xl border p-3 text-xs font-medium ${
+                    editMessage.type === 'error'
+                      ? 'border-rose-200 bg-rose-50 text-rose-700'
+                      : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                  }`}
+                >
+                  {editMessage.text}
+                </div>
+              )}
+
+              <form onSubmit={handleSaveBasicInfo} className="space-y-4">
+                <div>
+                  <label className="text-xs font-semibold text-slate-700 block mb-1.5">Full Name</label>
+                  <input
+                    type="text"
+                    required
+                    disabled={profile.profile_edit_locked}
+                    value={editForm.full_name}
+                    onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })}
+                    className="w-full border border-slate-200 p-3 rounded-xl text-sm outline-none disabled:bg-slate-100"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-700 block mb-1.5">Phone Number</label>
+                  <input
+                    type="tel"
+                    disabled={profile.profile_edit_locked}
+                    value={editForm.phone}
+                    onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+                    className="w-full border border-slate-200 p-3 rounded-xl text-sm outline-none disabled:bg-slate-100"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-700 block mb-1.5">Address</label>
+                  <input
+                    type="text"
+                    disabled={profile.profile_edit_locked}
+                    value={editForm.address}
+                    onChange={(e) => setEditForm({ ...editForm, address: e.target.value })}
+                    className="w-full border border-slate-200 p-3 rounded-xl text-sm outline-none disabled:bg-slate-100"
+                  />
+                </div>
+                <button
+                  disabled={editLoading || profile.profile_edit_locked}
+                  className="w-full bg-[#002147] text-white py-3.5 rounded-xl font-bold text-sm hover:bg-slate-800 transition-all disabled:opacity-50"
+                >
+                  {editLoading ? 'Saving...' : 'Save Changes'}
+                </button>
+              </form>
+            </section>
+
+            {/* Change Password */}
             {!isImpersonating && (
               <section className="bg-white rounded-3xl p-6 border border-slate-100 shadow-sm">
                 <h3 className="font-bold text-slate-900 mb-1">Change Password</h3>
@@ -257,9 +361,7 @@ export default function UserDashboard() {
             )}
           </div>
         ) : (
-          /* --- MAIN DASHBOARD VIEW --- */
           <>
-            {/* Available Balance Card */}
             <section className="bg-[#002147] p-8 rounded-[2rem] text-white shadow-xl shadow-blue-900/20 mb-8 relative overflow-hidden">
               <div className="relative z-10">
                 <p className="text-blue-200 text-xs font-semibold uppercase tracking-wider mb-2">Available Balance</p>
@@ -274,7 +376,6 @@ export default function UserDashboard() {
               <div className="absolute top-[-20%] right-[-10%] w-48 h-48 bg-white/5 rounded-full blur-3xl"></div>
             </section>
 
-            {/* Quick Actions */}
             <div className="grid grid-cols-4 gap-4 mb-10">
               {[
                 { label: 'Transfer', icon: '⇄', color: 'bg-blue-50 text-blue-600', action: 'transfer' },
@@ -291,7 +392,6 @@ export default function UserDashboard() {
               ))}
             </div>
 
-            {/* Recent Activity */}
             <section className="bg-white rounded-3xl p-6 border border-slate-100 shadow-sm">
               <div className="flex justify-between items-center mb-6">
                 <h3 className="font-bold text-slate-900">Recent Activity</h3>
@@ -326,7 +426,6 @@ export default function UserDashboard() {
         )}
       </main>
 
-      {/* Modern Mobile Navigation */}
       <nav className="fixed bottom-0 left-0 w-full bg-white/90 backdrop-blur-xl border-t border-slate-100 px-8 py-4 flex justify-between items-center mobile-nav md:hidden">
         <button onClick={() => setActiveTab('home')} className={`flex flex-col items-center gap-1 ${activeTab === 'home' ? 'text-[#002147]' : 'text-slate-300'}`}>
           <span className="text-xl">🏠</span>
@@ -346,7 +445,6 @@ export default function UserDashboard() {
         </button>
       </nav>
 
-      {/* Restriction Modal */}
       {restriction && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[5000] p-6">
           <div className="bg-white p-8 rounded-[2rem] max-w-sm w-full text-center shadow-2xl animate-fadeIn">
