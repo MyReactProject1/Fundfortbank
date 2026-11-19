@@ -11,28 +11,56 @@ export default function Home() {
             <div className="bg-[#002147] text-white p-1 rounded-sm font-bold">FFB</div>
             <h1 className="text-lg font-bold text-[#002147] tracking-tight">FundFort Bank</h1>
           </div>
-          <Link to="/login" className="bg-[#002147] text-white px-5 py-2 text-xs font-bold uppercase tracking-widest hover:bg-slate-800 transition-all">
-            Sign In
-          </Link>
+          <div className="flex items-center gap-2 sm:gap-3">
+            <Link
+              to="/login"
+              className="border border-slate-300 text-[#002147] px-3 sm:px-5 py-2 text-xs font-bold uppercase tracking-widest hover:bg-slate-50 transition-all"
+            >
+              Sign In
+            </Link>
+            <Link
+              to="/login?mode=signup"
+              className="bg-[#002147] text-white px-3 sm:px-5 py-2 text-xs font-bold uppercase tracking-widest hover:bg-slate-800 transition-all"
+            >
+              Create Account
+            </Link>
+          </div>
         </div>
       </nav>
 
       {/* Hero Section - Responsive flex */}
       <header className="max-w-7xl mx-auto px-4 py-12 md:py-24 grid md:grid-cols-2 gap-12 items-center">
         <div className="text-center md:text-left">
-          <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-[0.3em] mb-4 block">UK Institutional Wealth Management</span>
+          <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-[0.3em] mb-4 block">
+            UK Institutional Wealth Management
+          </span>
           <h2 className="text-4xl md:text-6xl font-bold text-[#002147] leading-tight mb-6">
             Global Assets. <br /> Dedicated Security.
           </h2>
           <p className="text-slate-500 text-lg mb-10 max-w-lg mx-auto md:mx-0">
-            Secure multi-currency accounts and wealth management for private individuals and corporate partners. 
+            Secure multi-currency accounts and wealth management for private individuals and corporate partners.
           </p>
-          <Link to="/login" className="inline-block bg-[#002147] text-white px-8 py-4 font-bold text-sm uppercase tracking-widest hover:bg-emerald-700 transition-all">
-            Get Started
-          </Link>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center md:justify-start">
+            <Link
+              to="/login?mode=signup"
+              className="inline-block bg-[#002147] text-white px-8 py-4 font-bold text-sm uppercase tracking-widest hover:bg-emerald-700 transition-all text-center"
+            >
+              Open an Account
+            </Link>
+            <Link
+              to="/login"
+              className="inline-block border border-[#002147] text-[#002147] px-8 py-4 font-bold text-sm uppercase tracking-widest hover:bg-slate-50 transition-all text-center"
+            >
+              Sign In
+            </Link>
+          </div>
         </div>
         <div className="hidden md:block bg-slate-100 h-[400px] border border-slate-200">
-          <img src="https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?q=80&w=1000&auto=format&fit=crop" className="w-full h-full object-cover grayscale" alt="Bank HQ" />
+          <img
+            src="https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?q=80&w=1000&auto=format&fit=crop"
+            className="w-full h-full object-cover grayscale"
+            alt="Bank HQ"
+          />
         </div>
       </header>
 
