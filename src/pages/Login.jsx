@@ -8,7 +8,7 @@ const isValidEmail = (value) =>
 export default function Login() {
   const [searchParams] = useSearchParams();
   const paramMode = searchParams.get('mode');
-  const validModes = ['login', 'signup', 'verify-otp', 'complete-profile', 'forgot', 'reset-otp', 'force-reset'];
+  const validModes = ['login', 'signup', 'verify-otp', 'complete-signup', 'forgot', 'reset-otp', 'force-reset'];
   const initialMode = validModes.includes(paramMode) ? paramMode : 'login';
 
   const [mode, setMode] = useState(initialMode);
@@ -24,8 +24,10 @@ export default function Login() {
   const [notice, setNotice] = useState('');
   const [popup, setPopup] = useState(null); // { title, message }
 
-  // Essential Records (filled ONLY after OTP verification)
-  const [profileForm, setProfileForm] = useState({
+  // Step 3: Password + Essential Records (filled ONLY after OTP is verified)
+  const [signupForm, setSignupForm] = useState({
+    password: '',
+    confirmPassword: '',
     full_name: '',
     phone: '',
     address: '',
@@ -71,7 +73,6 @@ export default function Login() {
   };
 
   const routeAfterAuth = async (user) => {
-    // 1. Check if Admin
     const { data: admin } = await supabase
       .from('admins')
       .select('id')
@@ -83,7 +84,6 @@ export default function Login() {
       return;
     }
 
-    // 2. Enforce First-Time Password Reset (for Admin-created accounts)
     if (user?.user_metadata?.must_change_password) {
       setNewPassword('');
       setConfirmPassword('');
@@ -92,17 +92,10 @@ export default function Login() {
       return;
     }
 
-    // 3. Enforce Essential Records completion (after OTP)
-    if (user?.user_metadata?.profile_completed === false) {
-      setMode('complete-profile');
-      setNotice('Email verified! Complete your essential account details to finish opening your account.');
-      return;
-    }
-
     navigate('/dashboard');
   };
 
-  // 1. SIGN IN
+  // --- SIGN IN ---
   const handleLogin = async (e) => {
     e.preventDefault();
     clearMessages();
@@ -116,12 +109,7 @@ export default function Login() {
       });
 
       if (loginError) {
-        if (loginError.message.toLowerCase().includes('email not confirmed')) {
-          setMode('verify-otp');
-          setNotice('Account not verified yet. Enter the OTP sent to your email to continue.');
-        } else {
-          setError('Invalid email or password. Please try again.');
-        }
+        setError('Invalid email or password. Please try again.');
         return;
       }
 
@@ -133,60 +121,55 @@ export default function Login() {
     }
   };
 
-  // 2. STEP 1 OF CREATE ACCOUNT: EMAIL + PASSWORD -> CHECK DUPLICATE -> SEND OTP
-  const handleSignupStep1 = async (e) => {
+  // --- STEP 1: ENTER EMAIL ONLY -> SEND 5-DIGIT OTP (NOTHING STORED IN AUTH/CUSTOMERS) ---
+  const handleSendSignupOtp = async (e) => {
     e.preventDefault();
     clearMessages();
 
     if (!allowPublicSignup) {
       setPopup({
         title: 'Registration Locked',
-        message: 'New account creation is currently locked by the administrator. Please contact support.'
+        message: 'New account creation is currently locked by the administrator.'
       });
       return;
     }
 
     if (!checkEmailOrPopup(email)) return;
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters.');
-      return;
-    }
 
     setLoading(true);
     try {
-      const cleanEmail = email.trim().toLowerCase();
-      const { data, error: signupError } = await supabase.auth.signUp({
-        email: cleanEmail,
-        password,
-        options: {
-          data: {
-            profile_completed: false,
-            must_change_password: false
-          }
+      const { data, error: fnError } = await supabase.functions.invoke('auth-otp-signup', {
+        body: {
+          action: 'send_otp',
+          email: email.trim().toLowerCase()
         }
       });
 
-      if (signupError) {
-        const msg = signupError.message.toLowerCase();
-        if (msg.includes('already') || msg.includes('registered')) {
-          setPopup({
-            title: 'Email Already Registered',
-            message: 'This email address is already registered. Please sign in or reset your password.'
-          });
-          return;
-        }
-        if (msg.includes('invalid')) {
-          setPopup({
-            title: 'Invalid Email Address',
-            message: 'The email address you entered is invalid.'
-          });
-          return;
-        }
-        throw signupError;
+      if (fnError) {
+        // Parse edge function error body if available
+        let errMsg = fnError.message;
+        try {
+          const parsed = await fnError.context?.json();
+          if (parsed?.error === 'ALREADY_REGISTERED') {
+            setPopup({
+              title: 'Email Already Registered',
+              message: 'This email address is already registered. Please sign in or reset your password.'
+            });
+            return;
+          }
+          if (parsed?.error === 'INVALID_EMAIL') {
+            setPopup({
+              title: 'Invalid Email Address',
+              message: 'The email address you entered is invalid.'
+            });
+            return;
+          }
+          if (parsed?.message) errMsg = parsed.message;
+        } catch (_) {}
+        throw new Error(errMsg);
       }
 
-      // CRITICAL: Supabase returns an empty identities array when the email is ALREADY registered
-      if (data?.user && (!data.user.identities || data.user.identities.length === 0)) {
+      if (data?.error === 'ALREADY_REGISTERED') {
         setPopup({
           title: 'Email Already Registered',
           message: 'This email address is already registered. Please sign in or reset your password.'
@@ -194,17 +177,21 @@ export default function Login() {
         return;
       }
 
+      if (!data?.success) {
+        throw new Error(data?.message || 'Could not send OTP.');
+      }
+
       setOtp('');
       setMode('verify-otp');
-      setNotice('An OTP has been sent to your email. Enter it below to proceed.');
+      setNotice('A 5-digit OTP has been sent to your email. Enter it below to continue.');
     } catch (err) {
-      setError(err.message || 'Could not start account creation.');
+      setError(err.message || 'Could not send OTP.');
     } finally {
       setLoading(false);
     }
   };
 
-  // 3. STEP 2: VERIFY OTP (ONLY WAY TO PROCEED)
+  // --- STEP 2: VERIFY 5-DIGIT OTP ---
   const handleVerifySignupOtp = async (e) => {
     e.preventDefault();
     clearMessages();
@@ -212,96 +199,109 @@ export default function Login() {
 
     setLoading(true);
     try {
-      const { data, error: verifyError } = await supabase.auth.verifyOtp({
-        email: email.trim().toLowerCase(),
-        token: otp.trim(),
-        type: 'signup'
+      const { data, error: fnError } = await supabase.functions.invoke('auth-otp-signup', {
+        body: {
+          action: 'verify_otp',
+          email: email.trim().toLowerCase(),
+          otp: otp.trim()
+        }
       });
 
-      if (verifyError) throw verifyError;
-
-      if (data?.user) {
-        await routeAfterAuth(data.user);
-      } else {
-        setMode('login');
-        setNotice('Email verified! Please sign in to continue.');
+      if (fnError) {
+        let errMsg = 'Invalid or expired OTP code.';
+        try {
+          const parsed = await fnError.context?.json();
+          if (parsed?.message) errMsg = parsed.message;
+        } catch (_) {}
+        throw new Error(errMsg);
       }
+
+      if (!data?.verified) {
+        throw new Error(data?.message || 'Invalid OTP code.');
+      }
+
+      setMode('complete-signup');
+      setNotice('Email verified! Now create your password and complete your account details.');
     } catch (err) {
-      setError('Invalid or expired OTP. You cannot proceed without a valid OTP.');
+      setError(err.message || 'Invalid or expired OTP code.');
     } finally {
       setLoading(false);
     }
   };
 
-  // RESEND OTP
-  const handleResendOtp = async () => {
-    clearMessages();
-    if (!checkEmailOrPopup(email)) return;
-
-    setLoading(true);
-    try {
-      const { error: resendError } = await supabase.auth.resend({
-        type: 'signup',
-        email: email.trim().toLowerCase()
-      });
-      if (resendError) throw resendError;
-      setNotice('A new OTP code has been sent to your email.');
-    } catch (err) {
-      setError(err.message || 'Could not resend OTP.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // 4. STEP 3: FILL ESSENTIAL RECORDS (AFTER OTP VERIFIED)
-  const handleCompleteProfile = async (e) => {
+  // --- STEP 3: SET PASSWORD & ESSENTIAL RECORDS -> CREATE REAL ACCOUNT ---
+  const handleCompleteSignup = async (e) => {
     e.preventDefault();
     clearMessages();
-    if (!profileForm.full_name.trim()) {
+
+    if (signupForm.password.length < 6) {
+      setError('Password must be at least 6 characters.');
+      return;
+    }
+    if (signupForm.password !== signupForm.confirmPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
+    if (!signupForm.full_name.trim()) {
       setError('Full name is required.');
       return;
     }
 
     setLoading(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        setMode('verify-otp');
-        setError('Session expired. Please verify your OTP or sign in again.');
-        return;
-      }
-
-      const { error: updateCustomerError } = await supabase
-        .from('customers')
-        .update({
-          full_name: profileForm.full_name.trim(),
-          phone: profileForm.phone.trim() || null,
-          address: profileForm.address.trim() || null,
-          account_type: profileForm.account_type,
-          currency: profileForm.currency
-        })
-        .eq('id', session.user.id);
-
-      if (updateCustomerError) throw updateCustomerError;
-
-      const { error: metaError } = await supabase.auth.updateUser({
-        data: {
-          full_name: profileForm.full_name.trim(),
-          profile_completed: true
+      const cleanEmail = email.trim().toLowerCase();
+      const { data, error: fnError } = await supabase.functions.invoke('auth-otp-signup', {
+        body: {
+          action: 'complete_signup',
+          email: cleanEmail,
+          password: signupForm.password,
+          full_name: signupForm.full_name.trim(),
+          phone: signupForm.phone.trim(),
+          address: signupForm.address.trim(),
+          account_type: signupForm.account_type,
+          currency: signupForm.currency
         }
       });
 
-      if (metaError) throw metaError;
+      if (fnError) {
+        let errMsg = 'Could not complete registration.';
+        try {
+          const parsed = await fnError.context?.json();
+          if (parsed?.error === 'OTP_REQUIRED') {
+            setMode('verify-otp');
+            setError('Your email verification expired. Please verify your OTP again.');
+            return;
+          }
+          if (parsed?.message) errMsg = parsed.message;
+        } catch (_) {}
+        throw new Error(errMsg);
+      }
+
+      if (!data?.success) {
+        throw new Error(data?.message || 'Could not create account.');
+      }
+
+      // Automatically sign the user into their brand-new account
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password: signupForm.password
+      });
+
+      if (signInError) {
+        setMode('login');
+        setNotice('Account created! Please sign in with your new password.');
+        return;
+      }
 
       navigate('/dashboard');
     } catch (err) {
-      setError(err.message || 'Could not save your account details.');
+      setError(err.message || 'Could not complete account creation.');
     } finally {
       setLoading(false);
     }
   };
 
-  // 5. FORCED FIRST-TIME PASSWORD RESET (ADMIN-CREATED ACCOUNTS)
+  // --- FORCED FIRST-TIME PASSWORD RESET (ADMIN-CREATED ACCOUNTS) ---
   const handleForceResetPassword = async (e) => {
     e.preventDefault();
     clearMessages();
@@ -316,18 +316,12 @@ export default function Login() {
 
     setLoading(true);
     try {
-      const { data, error: updateError } = await supabase.auth.updateUser({
+      const { error: updateError } = await supabase.auth.updateUser({
         password: newPassword,
         data: { must_change_password: false }
       });
       if (updateError) throw updateError;
-
-      if (data?.user?.user_metadata?.profile_completed === false) {
-        setMode('complete-profile');
-        setNotice('Password updated! Now complete your essential account details.');
-      } else {
-        navigate('/dashboard');
-      }
+      navigate('/dashboard');
     } catch (err) {
       setError(err.message || 'Could not update password.');
     } finally {
@@ -335,7 +329,7 @@ export default function Login() {
     }
   };
 
-  // 6. FORGOT / RESET PASSWORD (SEND RECOVERY OTP)
+  // --- FORGOT / RESET PASSWORD ---
   const handleForgotPassword = async (e) => {
     e.preventDefault();
     clearMessages();
@@ -351,7 +345,7 @@ export default function Login() {
       setOtp('');
       setNewPassword('');
       setMode('reset-otp');
-      setNotice('A password reset OTP has been sent to your email.');
+      setNotice('A password reset code has been sent to your email.');
     } catch (err) {
       setError(err.message || 'Could not send reset code.');
     } finally {
@@ -359,7 +353,6 @@ export default function Login() {
     }
   };
 
-  // 7. VERIFY RECOVERY OTP & SET NEW PASSWORD
   const handleResetPassword = async (e) => {
     e.preventDefault();
     clearMessages();
@@ -468,36 +461,24 @@ export default function Login() {
               </button>
             </form>
 
-            <div className="mt-6 text-center space-y-2 text-xs text-slate-500">
-              <p>
-                Don&apos;t have an account?{' '}
-                <button
-                  type="button"
-                  onClick={() => { clearMessages(); setMode('signup'); }}
-                  className="font-bold text-[#002147] hover:underline"
-                >
-                  Create Account
-                </button>
-              </p>
-              <p>
-                Have a verification OTP?{' '}
-                <button
-                  type="button"
-                  onClick={() => { clearMessages(); setMode('verify-otp'); }}
-                  className="font-bold text-[#002147] hover:underline"
-                >
-                  Verify OTP
-                </button>
-              </p>
-            </div>
+            <p className="mt-6 text-center text-xs text-slate-500">
+              Don&apos;t have an account?{' '}
+              <button
+                type="button"
+                onClick={() => { clearMessages(); setMode('signup'); }}
+                className="font-bold text-[#002147] hover:underline"
+              >
+                Create Account
+              </button>
+            </p>
           </>
         )}
 
-        {/* --- CREATE ACCOUNT STEP 1: EMAIL & PASSWORD ONLY --- */}
+        {/* --- STEP 1: ENTER EMAIL ONLY -> SEND 5-DIGIT OTP --- */}
         {mode === 'signup' && (
           <>
             <span className="inline-block mb-2 text-[10px] font-bold uppercase tracking-widest text-blue-700">
-              Step 1 of 3 • Account Credentials
+              Step 1 of 3 • Email Verification
             </span>
             <h2 className="text-2xl font-semibold mb-2">Create Account</h2>
             {!allowPublicSignup ? (
@@ -506,11 +487,11 @@ export default function Login() {
               </div>
             ) : (
               <p className="text-slate-500 text-sm mb-6">
-                Enter your email and password. Next, you&apos;ll verify your email with an OTP.
+                Enter your email address. We&apos;ll send a 5-digit OTP to verify your email before creating your account.
               </p>
             )}
 
-            <form onSubmit={handleSignupStep1} noValidate className="space-y-4">
+            <form onSubmit={handleSendSignupOtp} noValidate className="space-y-4">
               <div>
                 <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Email Address</label>
                 <input
@@ -523,33 +504,11 @@ export default function Login() {
                   onChange={(e) => setEmail(e.target.value)}
                 />
               </div>
-              <div>
-                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Password</label>
-                <div className="relative">
-                  <input
-                    type={show ? 'text' : 'password'}
-                    required
-                    disabled={!allowPublicSignup}
-                    minLength={6}
-                    value={password}
-                    placeholder="Minimum 6 characters"
-                    className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none disabled:bg-slate-100"
-                    onChange={(e) => setPassword(e.target.value)}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShow(!show)}
-                    className="absolute right-4 top-4 text-xs font-bold text-slate-400"
-                  >
-                    {show ? 'Hide' : 'Show'}
-                  </button>
-                </div>
-              </div>
               <button
                 disabled={loading || !allowPublicSignup}
                 className="w-full bg-[#002147] text-white py-4 rounded-xl font-bold text-sm hover:bg-slate-800 transition-all disabled:opacity-50"
               >
-                {loading ? 'Sending OTP...' : 'Continue'}
+                {loading ? 'Sending 5-Digit OTP...' : 'Continue'}
               </button>
             </form>
 
@@ -566,47 +525,36 @@ export default function Login() {
           </>
         )}
 
-        {/* --- STEP 2: VERIFY OTP --- */}
+        {/* --- STEP 2: VERIFY 5-DIGIT OTP --- */}
         {mode === 'verify-otp' && (
           <>
             <span className="inline-block mb-2 text-[10px] font-bold uppercase tracking-widest text-blue-700">
-              Step 2 of 3 • Email Verification
+              Step 2 of 3 • Enter 5-Digit OTP
             </span>
-            <h2 className="text-2xl font-semibold mb-2">Enter OTP Code</h2>
+            <h2 className="text-2xl font-semibold mb-2">Verify Your Email</h2>
             <p className="text-slate-500 text-sm mb-6">
-              Enter the verification code sent to your email. Your account will not be created until verified.
+              Enter the 5-digit code sent to <strong>{email}</strong>.
             </p>
 
             <form onSubmit={handleVerifySignupOtp} noValidate className="space-y-4">
               <div>
-                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Email Address</label>
-                <input
-                  type="email"
-                  required
-                  value={email}
-                  placeholder="name@email.com"
-                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none"
-                  onChange={(e) => setEmail(e.target.value)}
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Verification Code (OTP)</label>
+                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">5-Digit OTP Code</label>
                 <input
                   type="text"
                   inputMode="numeric"
                   required
-                  maxLength={10}
+                  maxLength={5}
                   value={otp}
-                  placeholder="Enter OTP code"
-                  className="w-full border border-slate-200 p-3.5 rounded-xl text-center font-mono text-lg tracking-[0.3em] focus:ring-2 focus:ring-[#002147] outline-none"
+                  placeholder="12345"
+                  className="w-full border border-slate-200 p-3.5 rounded-xl text-center font-mono text-2xl tracking-[0.5em] focus:ring-2 focus:ring-[#002147] outline-none"
                   onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
                 />
               </div>
               <button
-                disabled={loading}
+                disabled={loading || otp.length < 5}
                 className="w-full bg-[#002147] text-white py-4 rounded-xl font-bold text-sm hover:bg-slate-800 transition-all disabled:opacity-50"
               >
-                {loading ? 'Verifying...' : 'Verify OTP & Proceed'}
+                {loading ? 'Verifying...' : 'Verify OTP & Continue'}
               </button>
             </form>
 
@@ -614,83 +562,107 @@ export default function Login() {
               <button
                 type="button"
                 disabled={loading}
-                onClick={handleResendOtp}
+                onClick={handleSendSignupOtp}
                 className="font-bold text-[#002147] hover:underline"
               >
-                Resend OTP
+                Resend 5-Digit OTP
               </button>
               <button
                 type="button"
-                onClick={() => { clearMessages(); setMode('login'); }}
+                onClick={() => { clearMessages(); setMode('signup'); }}
                 className="font-semibold hover:underline"
               >
-                Back to Sign In
+                Change Email
               </button>
             </div>
           </>
         )}
 
-        {/* --- STEP 3: FILL ESSENTIAL RECORDS (AFTER OTP VERIFIED) --- */}
-        {mode === 'complete-profile' && (
+        {/* --- STEP 3: SET PASSWORD & ESSENTIAL RECORDS (ONLY AFTER OTP VERIFIED) --- */}
+        {mode === 'complete-signup' && (
           <>
             <span className="inline-block mb-2 text-[10px] font-bold uppercase tracking-widest text-emerald-700">
-              Step 3 of 3 • Essential Records
+              Step 3 of 3 • Complete Account
             </span>
-            <h2 className="text-2xl font-semibold mb-2">Complete Your Profile</h2>
-            <p className="text-slate-500 text-sm mb-6">
-              Your email is verified. Fill in your essential records to activate your bank dashboard.
+            <h2 className="text-2xl font-semibold mb-2">Set Password &amp; Details</h2>
+            <p className="text-slate-500 text-sm mb-5">
+              Verified email: <strong>{email}</strong>
             </p>
 
-            <form onSubmit={handleCompleteProfile} className="space-y-4">
+            <form onSubmit={handleCompleteSignup} className="space-y-3.5">
               <div>
-                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Full Name *</label>
+                <label className="text-xs font-semibold text-slate-700 block mb-1 ml-1">Full Name *</label>
                 <input
                   type="text"
                   required
-                  value={profileForm.full_name}
+                  value={signupForm.full_name}
                   placeholder="Jane Doe"
-                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none"
-                  onChange={(e) => setProfileForm({ ...profileForm, full_name: e.target.value })}
+                  className="w-full border border-slate-200 p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-[#002147]"
+                  onChange={(e) => setSignupForm({ ...signupForm, full_name: e.target.value })}
                 />
               </div>
               <div>
-                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Phone Number *</label>
+                <label className="text-xs font-semibold text-slate-700 block mb-1 ml-1">Create Password *</label>
+                <input
+                  type={show ? 'text' : 'password'}
+                  required
+                  minLength={6}
+                  value={signupForm.password}
+                  placeholder="Minimum 6 characters"
+                  className="w-full border border-slate-200 p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-[#002147]"
+                  onChange={(e) => setSignupForm({ ...signupForm, password: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-700 block mb-1 ml-1">Confirm Password *</label>
+                <input
+                  type={show ? 'text' : 'password'}
+                  required
+                  minLength={6}
+                  value={signupForm.confirmPassword}
+                  placeholder="Re-enter password"
+                  className="w-full border border-slate-200 p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-[#002147]"
+                  onChange={(e) => setSignupForm({ ...signupForm, confirmPassword: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-700 block mb-1 ml-1">Phone Number *</label>
                 <input
                   type="tel"
                   required
-                  value={profileForm.phone}
+                  value={signupForm.phone}
                   placeholder="+234 800 000 0000"
-                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none"
-                  onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
+                  className="w-full border border-slate-200 p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-[#002147]"
+                  onChange={(e) => setSignupForm({ ...signupForm, phone: e.target.value })}
                 />
               </div>
               <div>
-                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Residential Address *</label>
+                <label className="text-xs font-semibold text-slate-700 block mb-1 ml-1">Residential Address *</label>
                 <input
                   type="text"
                   required
-                  value={profileForm.address}
+                  value={signupForm.address}
                   placeholder="Street, City, Country"
-                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none"
-                  onChange={(e) => setProfileForm({ ...profileForm, address: e.target.value })}
+                  className="w-full border border-slate-200 p-3 rounded-xl text-sm outline-none focus:ring-2 focus:ring-[#002147]"
+                  onChange={(e) => setSignupForm({ ...signupForm, address: e.target.value })}
                 />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Account Type</label>
+                  <label className="text-xs font-semibold text-slate-700 block mb-1 ml-1">Account Type</label>
                   <select
-                    value={profileForm.account_type}
-                    onChange={(e) => setProfileForm({ ...profileForm, account_type: e.target.value })}
+                    value={signupForm.account_type}
+                    onChange={(e) => setSignupForm({ ...signupForm, account_type: e.target.value })}
                     className="w-full border border-slate-200 p-3 rounded-xl text-sm outline-none"
                   >
                     {['Standard', 'Silver', 'Gold', 'Platinum'].map(x => <option key={x}>{x}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Currency</label>
+                  <label className="text-xs font-semibold text-slate-700 block mb-1 ml-1">Currency</label>
                   <select
-                    value={profileForm.currency}
-                    onChange={(e) => setProfileForm({ ...profileForm, currency: e.target.value })}
+                    value={signupForm.currency}
+                    onChange={(e) => setSignupForm({ ...signupForm, currency: e.target.value })}
                     className="w-full border border-slate-200 p-3 rounded-xl text-sm outline-none"
                   >
                     {['USD', 'NGN', 'GBP', 'EUR', 'CAD', 'AUD'].map(x => <option key={x}>{x}</option>)}
@@ -699,9 +671,9 @@ export default function Login() {
               </div>
               <button
                 disabled={loading}
-                className="w-full bg-[#002147] text-white py-4 rounded-xl font-bold text-sm hover:bg-slate-800 transition-all disabled:opacity-50"
+                className="w-full bg-[#002147] text-white py-4 rounded-xl font-bold text-sm hover:bg-slate-800 transition-all disabled:opacity-50 mt-2"
               >
-                {loading ? 'Activating Account...' : 'Finish & Open Dashboard'}
+                {loading ? 'Creating Account...' : 'Create Account & Open Dashboard'}
               </button>
             </form>
           </>
@@ -758,7 +730,7 @@ export default function Login() {
           <>
             <h2 className="text-2xl font-semibold mb-2">Reset Password</h2>
             <p className="text-slate-500 text-sm mb-6">
-              Enter your registered email address and we&apos;ll send a reset OTP.
+              Enter your registered email address and we&apos;ll send a reset code.
             </p>
 
             <form onSubmit={handleForgotPassword} noValidate className="space-y-4">
@@ -777,7 +749,7 @@ export default function Login() {
                 disabled={loading}
                 className="w-full bg-[#002147] text-white py-4 rounded-xl font-bold text-sm hover:bg-slate-800 transition-all disabled:opacity-50"
               >
-                {loading ? 'Sending code...' : 'Send Reset OTP'}
+                {loading ? 'Sending code...' : 'Send Reset Code'}
               </button>
             </form>
 
@@ -799,19 +771,19 @@ export default function Login() {
           <>
             <h2 className="text-2xl font-semibold mb-2">Set New Password</h2>
             <p className="text-slate-500 text-sm mb-6">
-              Enter the OTP sent to <strong>{email}</strong> and choose your new password.
+              Enter the code sent to <strong>{email}</strong> and choose your new password.
             </p>
 
             <form onSubmit={handleResetPassword} className="space-y-4">
               <div>
-                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Reset OTP Code</label>
+                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Reset Code</label>
                 <input
                   type="text"
                   inputMode="numeric"
                   required
                   maxLength={10}
                   value={otp}
-                  placeholder="Enter OTP code"
+                  placeholder="Enter reset code"
                   className="w-full border border-slate-200 p-3.5 rounded-xl text-center font-mono text-lg tracking-[0.3em] focus:ring-2 focus:ring-[#002147] outline-none"
                   onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
                 />
