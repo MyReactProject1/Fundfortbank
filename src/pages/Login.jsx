@@ -8,10 +8,10 @@ const isValidEmail = (value) =>
 export default function Login() {
   const [searchParams] = useSearchParams();
   const paramMode = searchParams.get('mode');
-  const initialMode = ['signup', 'force-reset', 'verify-otp'].includes(paramMode) ? paramMode : 'login';
+  const validModes = ['login', 'signup', 'verify-otp', 'complete-profile', 'forgot', 'reset-otp', 'force-reset'];
+  const initialMode = validModes.includes(paramMode) ? paramMode : 'login';
 
-  const [mode, setMode] = useState(initialMode); // 'login' | 'signup' | 'verify-otp' | 'forgot' | 'reset-otp' | 'force-reset'
-  const [fullName, setFullName] = useState('');
+  const [mode, setMode] = useState(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -21,13 +21,22 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [invalidEmailPopup, setInvalidEmailPopup] = useState(false);
+
+  // Essential Records (filled ONLY after OTP verification)
+  const [profileForm, setProfileForm] = useState({
+    full_name: '',
+    phone: '',
+    address: '',
+    account_type: 'Standard',
+    currency: 'USD'
+  });
+
   const navigate = useNavigate();
 
   useEffect(() => {
     const m = searchParams.get('mode');
-    if (['signup', 'login', 'force-reset', 'verify-otp'].includes(m)) {
-      setMode(m);
-    }
+    if (validModes.includes(m)) setMode(m);
   }, [searchParams]);
 
   const clearMessages = () => {
@@ -35,9 +44,9 @@ export default function Login() {
     setNotice('');
   };
 
-  const validateEmailOrError = (value) => {
+  const checkEmailOrPopup = (value) => {
     if (!isValidEmail(value)) {
-      setError('Invalid email address. Please enter a valid email (e.g., name@domain.com).');
+      setInvalidEmailPopup(true);
       return false;
     }
     return true;
@@ -56,12 +65,19 @@ export default function Login() {
       return;
     }
 
-    // 2. Enforce First-Time Password Reset for Admin-Created Accounts
+    // 2. Enforce First-Time Password Reset (for Admin-created accounts)
     if (user?.user_metadata?.must_change_password) {
       setNewPassword('');
       setConfirmPassword('');
       setMode('force-reset');
-      setNotice('Security requirement: Please replace your temporary password before accessing your account.');
+      setNotice('Security requirement: Please set a new password to replace your temporary password.');
+      return;
+    }
+
+    // 3. Enforce Essential Records completion (for self-registered accounts)
+    if (user?.user_metadata?.profile_completed === false) {
+      setMode('complete-profile');
+      setNotice('Email verified! Complete your essential account details to finish opening your account.');
       return;
     }
 
@@ -72,7 +88,7 @@ export default function Login() {
   const handleLogin = async (e) => {
     e.preventDefault();
     clearMessages();
-    if (!validateEmailOrError(email)) return;
+    if (!checkEmailOrPopup(email)) return;
 
     setLoading(true);
     try {
@@ -84,7 +100,7 @@ export default function Login() {
       if (loginError) {
         if (loginError.message.toLowerCase().includes('email not confirmed')) {
           setMode('verify-otp');
-          setNotice('Account not activated. Enter the 6-digit OTP sent to your email to complete opening.');
+          setNotice('Your account is not verified yet. Enter the OTP sent to your email to continue.');
         } else {
           setError('Invalid email or password. Please try again.');
         }
@@ -99,11 +115,11 @@ export default function Login() {
     }
   };
 
-  // 2. SELF-REGISTRATION (CREATE ACCOUNT)
-  const handleSignup = async (e) => {
+  // 2. STEP 1 OF SIGNUP: EMAIL + PASSWORD -> SEND OTP
+  const handleSignupStep1 = async (e) => {
     e.preventDefault();
     clearMessages();
-    if (!validateEmailOrError(email)) return;
+    if (!checkEmailOrPopup(email)) return;
     if (password.length < 6) {
       setError('Password must be at least 6 characters.');
       return;
@@ -116,29 +132,35 @@ export default function Login() {
         password,
         options: {
           data: {
-            full_name: fullName.trim(),
+            profile_completed: false,
             must_change_password: false
           }
         }
       });
 
-      if (signupError) throw signupError;
+      if (signupError) {
+        if (signupError.message.toLowerCase().includes('invalid')) {
+          setInvalidEmailPopup(true);
+          return;
+        }
+        throw signupError;
+      }
 
       setOtp('');
       setMode('verify-otp');
-      setNotice('OTP sent! Your account will not be created until you submit the 6-digit code from your email.');
+      setNotice('An OTP has been sent to your email. Enter it below to unlock your account setup.');
     } catch (err) {
-      setError(err.message || 'Could not create account.');
+      setError(err.message || 'Could not start account creation.');
     } finally {
       setLoading(false);
     }
   };
 
-  // 3. VERIFY SIGNUP / ADMIN-CREATED ACCOUNT OTP
+  // 3. STEP 2 OF SIGNUP: VERIFY OTP (6 to 8 digits)
   const handleVerifySignupOtp = async (e) => {
     e.preventDefault();
     clearMessages();
-    if (!validateEmailOrError(email)) return;
+    if (!checkEmailOrPopup(email)) return;
 
     setLoading(true);
     try {
@@ -154,19 +176,19 @@ export default function Login() {
         await routeAfterAuth(data.user);
       } else {
         setMode('login');
-        setNotice('Email verified! You can now sign in.');
+        setNotice('Email verified! Please sign in to continue.');
       }
     } catch (err) {
-      setError(err.message || 'Invalid or expired OTP code. Account opening cannot continue without a valid OTP.');
+      setError('Invalid or expired OTP. Please check your email and try again.');
     } finally {
       setLoading(false);
     }
   };
 
-  // RESEND SIGNUP OTP
+  // RESEND OTP
   const handleResendOtp = async () => {
     clearMessages();
-    if (!validateEmailOrError(email)) return;
+    if (!checkEmailOrPopup(email)) return;
 
     setLoading(true);
     try {
@@ -175,7 +197,7 @@ export default function Login() {
         email: email.trim().toLowerCase()
       });
       if (resendError) throw resendError;
-      setNotice('A new 6-digit verification code has been sent to your email.');
+      setNotice('A new OTP code has been sent to your email.');
     } catch (err) {
       setError(err.message || 'Could not resend OTP.');
     } finally {
@@ -183,7 +205,57 @@ export default function Login() {
     }
   };
 
-  // 4. FORCED FIRST-TIME PASSWORD RESET (ADMIN-CREATED ACCOUNTS)
+  // 4. STEP 3 OF SIGNUP: FILL ESSENTIAL RECORDS AFTER OTP
+  const handleCompleteProfile = async (e) => {
+    e.preventDefault();
+    clearMessages();
+    if (!profileForm.full_name.trim()) {
+      setError('Full name is required.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        setMode('verify-otp');
+        setError('Session expired. Please verify your OTP or sign in again.');
+        return;
+      }
+
+      // Update the customer row created by the verified-user trigger
+      const { error: updateCustomerError } = await supabase
+        .from('customers')
+        .update({
+          full_name: profileForm.full_name.trim(),
+          phone: profileForm.phone.trim() || null,
+          address: profileForm.address.trim() || null,
+          account_type: profileForm.account_type,
+          currency: profileForm.currency
+        })
+        .eq('id', session.user.id);
+
+      if (updateCustomerError) throw updateCustomerError;
+
+      // Mark profile as completed in Auth metadata
+      const { error: metaError } = await supabase.auth.updateUser({
+        data: {
+          full_name: profileForm.full_name.trim(),
+          profile_completed: true
+        }
+      });
+
+      if (metaError) throw metaError;
+
+      navigate('/dashboard');
+    } catch (err) {
+      setError(err.message || 'Could not save your account details.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 5. FORCED FIRST-TIME PASSWORD RESET (ADMIN-CREATED ACCOUNTS)
   const handleForceResetPassword = async (e) => {
     e.preventDefault();
     clearMessages();
@@ -212,11 +284,11 @@ export default function Login() {
     }
   };
 
-  // 5. FORGOT PASSWORD (SEND RECOVERY OTP)
+  // 6. FORGOT PASSWORD (SEND RECOVERY OTP)
   const handleForgotPassword = async (e) => {
     e.preventDefault();
     clearMessages();
-    if (!validateEmailOrError(email)) return;
+    if (!checkEmailOrPopup(email)) return;
 
     setLoading(true);
     try {
@@ -228,7 +300,7 @@ export default function Login() {
       setOtp('');
       setNewPassword('');
       setMode('reset-otp');
-      setNotice('A 6-digit password reset code has been sent to your email.');
+      setNotice('A password reset OTP has been sent to your email.');
     } catch (err) {
       setError(err.message || 'Could not send reset code.');
     } finally {
@@ -236,7 +308,7 @@ export default function Login() {
     }
   };
 
-  // 6. VERIFY RECOVERY OTP & SET NEW PASSWORD
+  // 7. VERIFY RECOVERY OTP & SET NEW PASSWORD
   const handleResetPassword = async (e) => {
     e.preventDefault();
     clearMessages();
@@ -263,7 +335,7 @@ export default function Login() {
       await supabase.auth.signOut();
       setPassword('');
       setMode('login');
-      setNotice('Password updated successfully! Sign in with your new password.');
+      setNotice('Password updated! Sign in with your new password.');
     } catch (err) {
       setError(err.message || 'Invalid code or could not update password.');
     } finally {
@@ -304,7 +376,7 @@ export default function Login() {
                   required
                   value={email}
                   placeholder="name@email.com"
-                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none transition-all"
+                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none"
                   onChange={(e) => setEmail(e.target.value)}
                 />
               </div>
@@ -316,7 +388,7 @@ export default function Login() {
                     onClick={() => { clearMessages(); setMode('forgot'); }}
                     className="text-xs font-semibold text-[#002147] hover:underline"
                   >
-                    Forgot password?
+                    Reset password?
                   </button>
                 </div>
                 <div className="relative">
@@ -325,7 +397,7 @@ export default function Login() {
                     required
                     value={password}
                     placeholder="Enter your password"
-                    className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none transition-all"
+                    className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none"
                     onChange={(e) => setPassword(e.target.value)}
                   />
                   <button
@@ -339,7 +411,7 @@ export default function Login() {
               </div>
               <button
                 disabled={loading}
-                className="w-full bg-[#002147] text-white py-4 rounded-xl font-bold text-sm hover:bg-slate-800 transition-all shadow-lg shadow-blue-900/10 disabled:opacity-50"
+                className="w-full bg-[#002147] text-white py-4 rounded-xl font-bold text-sm hover:bg-slate-800 transition-all disabled:opacity-50"
               >
                 {loading ? 'Signing in...' : 'Sign In'}
               </button>
@@ -357,37 +429,31 @@ export default function Login() {
                 </button>
               </p>
               <p>
-                Have an activation OTP?{' '}
+                Have a verification OTP?{' '}
                 <button
                   type="button"
                   onClick={() => { clearMessages(); setMode('verify-otp'); }}
                   className="font-bold text-[#002147] hover:underline"
                 >
-                  Verify Account
+                  Verify OTP
                 </button>
               </p>
             </div>
           </>
         )}
 
-        {/* --- CREATE ACCOUNT VIEW --- */}
+        {/* --- CREATE ACCOUNT STEP 1: EMAIL & PASSWORD ONLY --- */}
         {mode === 'signup' && (
           <>
-            <h2 className="text-2xl font-semibold mb-2">Open an account</h2>
-            <p className="text-slate-500 text-sm mb-6">Create your FundFort Bank account in seconds.</p>
+            <span className="inline-block mb-2 text-[10px] font-bold uppercase tracking-widest text-blue-700">
+              Step 1 of 3 • Security
+            </span>
+            <h2 className="text-2xl font-semibold mb-2">Create Account</h2>
+            <p className="text-slate-500 text-sm mb-6">
+              Enter your email and password. We&apos;ll send an OTP to verify your email before setting up your profile.
+            </p>
 
-            <form onSubmit={handleSignup} noValidate className="space-y-4">
-              <div>
-                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Full Name</label>
-                <input
-                  type="text"
-                  required
-                  value={fullName}
-                  placeholder="Jane Doe"
-                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none transition-all"
-                  onChange={(e) => setFullName(e.target.value)}
-                />
-              </div>
+            <form onSubmit={handleSignupStep1} noValidate className="space-y-4">
               <div>
                 <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Email Address</label>
                 <input
@@ -395,7 +461,7 @@ export default function Login() {
                   required
                   value={email}
                   placeholder="name@email.com"
-                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none transition-all"
+                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none"
                   onChange={(e) => setEmail(e.target.value)}
                 />
               </div>
@@ -408,7 +474,7 @@ export default function Login() {
                     minLength={6}
                     value={password}
                     placeholder="Minimum 6 characters"
-                    className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none transition-all"
+                    className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none"
                     onChange={(e) => setPassword(e.target.value)}
                   />
                   <button
@@ -422,9 +488,9 @@ export default function Login() {
               </div>
               <button
                 disabled={loading}
-                className="w-full bg-[#002147] text-white py-4 rounded-xl font-bold text-sm hover:bg-slate-800 transition-all shadow-lg shadow-blue-900/10 disabled:opacity-50"
+                className="w-full bg-[#002147] text-white py-4 rounded-xl font-bold text-sm hover:bg-slate-800 transition-all disabled:opacity-50"
               >
-                {loading ? 'Creating account...' : 'Create Account'}
+                {loading ? 'Sending OTP...' : 'Continue'}
               </button>
             </form>
 
@@ -441,12 +507,15 @@ export default function Login() {
           </>
         )}
 
-        {/* --- VERIFY SIGNUP OTP VIEW --- */}
+        {/* --- STEP 2: VERIFY OTP (6 TO 8 DIGITS) --- */}
         {mode === 'verify-otp' && (
           <>
-            <h2 className="text-2xl font-semibold mb-2">Verify your email</h2>
+            <span className="inline-block mb-2 text-[10px] font-bold uppercase tracking-widest text-blue-700">
+              Step 2 of 3 • Email Verification
+            </span>
+            <h2 className="text-2xl font-semibold mb-2">Enter OTP Code</h2>
             <p className="text-slate-500 text-sm mb-6">
-              Enter the 6-digit OTP sent to your email. Account creation will not complete without it.
+              Enter the verification code sent to your email. You cannot proceed without it.
             </p>
 
             <form onSubmit={handleVerifySignupOtp} noValidate className="space-y-4">
@@ -457,28 +526,28 @@ export default function Login() {
                   required
                   value={email}
                   placeholder="name@email.com"
-                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none transition-all"
+                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none"
                   onChange={(e) => setEmail(e.target.value)}
                 />
               </div>
               <div>
-                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">6-Digit OTP Code</label>
+                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Verification Code (OTP)</label>
                 <input
                   type="text"
                   inputMode="numeric"
                   required
-                  maxLength={6}
+                  maxLength={10}
                   value={otp}
-                  placeholder="123456"
-                  className="w-full border border-slate-200 p-3.5 rounded-xl text-center font-mono text-lg tracking-[0.4em] focus:ring-2 focus:ring-[#002147] outline-none transition-all"
-                  onChange={(e) => setOtp(e.target.value)}
+                  placeholder="Enter OTP code"
+                  className="w-full border border-slate-200 p-3.5 rounded-xl text-center font-mono text-lg tracking-[0.3em] focus:ring-2 focus:ring-[#002147] outline-none"
+                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
                 />
               </div>
               <button
                 disabled={loading}
                 className="w-full bg-[#002147] text-white py-4 rounded-xl font-bold text-sm hover:bg-slate-800 transition-all disabled:opacity-50"
               >
-                {loading ? 'Verifying...' : 'Verify & Complete Opening'}
+                {loading ? 'Verifying...' : 'Verify OTP & Continue'}
               </button>
             </form>
 
@@ -502,6 +571,83 @@ export default function Login() {
           </>
         )}
 
+        {/* --- STEP 3: FILL ESSENTIAL RECORDS (AFTER OTP VERIFIED) --- */}
+        {mode === 'complete-profile' && (
+          <>
+            <span className="inline-block mb-2 text-[10px] font-bold uppercase tracking-widest text-emerald-700">
+              Step 3 of 3 • Account Details
+            </span>
+            <h2 className="text-2xl font-semibold mb-2">Complete Your Profile</h2>
+            <p className="text-slate-500 text-sm mb-6">
+              Your email is verified. Fill in your essential records to activate your bank dashboard.
+            </p>
+
+            <form onSubmit={handleCompleteProfile} className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Full Name *</label>
+                <input
+                  type="text"
+                  required
+                  value={profileForm.full_name}
+                  placeholder="Jane Doe"
+                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none"
+                  onChange={(e) => setProfileForm({ ...profileForm, full_name: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Phone Number *</label>
+                <input
+                  type="tel"
+                  required
+                  value={profileForm.phone}
+                  placeholder="+234 800 000 0000"
+                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none"
+                  onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Residential Address *</label>
+                <input
+                  type="text"
+                  required
+                  value={profileForm.address}
+                  placeholder="Street, City, Country"
+                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none"
+                  onChange={(e) => setProfileForm({ ...profileForm, address: e.target.value })}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Account Type</label>
+                  <select
+                    value={profileForm.account_type}
+                    onChange={(e) => setProfileForm({ ...profileForm, account_type: e.target.value })}
+                    className="w-full border border-slate-200 p-3 rounded-xl text-sm outline-none"
+                  >
+                    {['Standard', 'Silver', 'Gold', 'Platinum'].map(x => <option key={x}>{x}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Currency</label>
+                  <select
+                    value={profileForm.currency}
+                    onChange={(e) => setProfileForm({ ...profileForm, currency: e.target.value })}
+                    className="w-full border border-slate-200 p-3 rounded-xl text-sm outline-none"
+                  >
+                    {['USD', 'NGN', 'GBP', 'EUR', 'CAD', 'AUD'].map(x => <option key={x}>{x}</option>)}
+                  </select>
+                </div>
+              </div>
+              <button
+                disabled={loading}
+                className="w-full bg-[#002147] text-white py-4 rounded-xl font-bold text-sm hover:bg-slate-800 transition-all disabled:opacity-50"
+              >
+                {loading ? 'Activating Account...' : 'Finish & Open Dashboard'}
+              </button>
+            </form>
+          </>
+        )}
+
         {/* --- FORCED FIRST-TIME PASSWORD RESET VIEW --- */}
         {mode === 'force-reset' && (
           <>
@@ -510,7 +656,7 @@ export default function Login() {
             </span>
             <h2 className="text-2xl font-semibold mb-2">Reset Your Password</h2>
             <p className="text-slate-500 text-sm mb-6">
-              You signed in with a temporary password. Create your own secure password to continue to your dashboard.
+              You signed in with a temporary password. Create your own secure password to continue.
             </p>
 
             <form onSubmit={handleForceResetPassword} className="space-y-4">
@@ -522,7 +668,7 @@ export default function Login() {
                   minLength={6}
                   value={newPassword}
                   placeholder="Minimum 6 characters"
-                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none transition-all"
+                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none"
                   onChange={(e) => setNewPassword(e.target.value)}
                 />
               </div>
@@ -534,7 +680,7 @@ export default function Login() {
                   minLength={6}
                   value={confirmPassword}
                   placeholder="Re-enter new password"
-                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none transition-all"
+                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none"
                   onChange={(e) => setConfirmPassword(e.target.value)}
                 />
               </div>
@@ -548,12 +694,12 @@ export default function Login() {
           </>
         )}
 
-        {/* --- FORGOT PASSWORD VIEW --- */}
+        {/* --- FORGOT / RESET PASSWORD VIEW --- */}
         {mode === 'forgot' && (
           <>
-            <h2 className="text-2xl font-semibold mb-2">Forgot password</h2>
+            <h2 className="text-2xl font-semibold mb-2">Reset Password</h2>
             <p className="text-slate-500 text-sm mb-6">
-              Enter your email address and we&apos;ll send a 6-digit reset code.
+              Enter your registered email address and we&apos;ll send a reset OTP.
             </p>
 
             <form onSubmit={handleForgotPassword} noValidate className="space-y-4">
@@ -564,7 +710,7 @@ export default function Login() {
                   required
                   value={email}
                   placeholder="name@email.com"
-                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none transition-all"
+                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none"
                   onChange={(e) => setEmail(e.target.value)}
                 />
               </div>
@@ -572,7 +718,7 @@ export default function Login() {
                 disabled={loading}
                 className="w-full bg-[#002147] text-white py-4 rounded-xl font-bold text-sm hover:bg-slate-800 transition-all disabled:opacity-50"
               >
-                {loading ? 'Sending code...' : 'Send Reset Code'}
+                {loading ? 'Sending code...' : 'Send Reset OTP'}
               </button>
             </form>
 
@@ -592,23 +738,23 @@ export default function Login() {
         {/* --- RESET PASSWORD WITH OTP VIEW --- */}
         {mode === 'reset-otp' && (
           <>
-            <h2 className="text-2xl font-semibold mb-2">Set new password</h2>
+            <h2 className="text-2xl font-semibold mb-2">Set New Password</h2>
             <p className="text-slate-500 text-sm mb-6">
-              Enter the 6-digit code sent to <strong>{email}</strong> and choose a new password.
+              Enter the OTP sent to <strong>{email}</strong> and choose your new password.
             </p>
 
             <form onSubmit={handleResetPassword} className="space-y-4">
               <div>
-                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">6-Digit Reset Code</label>
+                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Reset OTP Code</label>
                 <input
                   type="text"
                   inputMode="numeric"
                   required
-                  maxLength={6}
+                  maxLength={10}
                   value={otp}
-                  placeholder="123456"
-                  className="w-full border border-slate-200 p-3.5 rounded-xl text-center font-mono text-lg tracking-[0.4em] focus:ring-2 focus:ring-[#002147] outline-none transition-all"
-                  onChange={(e) => setOtp(e.target.value)}
+                  placeholder="Enter OTP code"
+                  className="w-full border border-slate-200 p-3.5 rounded-xl text-center font-mono text-lg tracking-[0.3em] focus:ring-2 focus:ring-[#002147] outline-none"
+                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
                 />
               </div>
               <div>
@@ -619,7 +765,7 @@ export default function Login() {
                   minLength={6}
                   value={newPassword}
                   placeholder="Minimum 6 characters"
-                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none transition-all"
+                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none"
                   onChange={(e) => setNewPassword(e.target.value)}
                 />
               </div>
@@ -645,6 +791,27 @@ export default function Login() {
       </div>
 
       <p className="mt-8 text-xs text-slate-400">Protected by industry-standard 256-bit encryption.</p>
+
+      {/* --- INVALID EMAIL POPUP MODAL --- */}
+      {invalidEmailPopup && (
+        <div className="fixed inset-0 z-[5000] flex items-center justify-center bg-slate-900/60 p-6 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-7 text-center shadow-2xl">
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-rose-50 text-2xl font-bold text-rose-600">
+              !
+            </div>
+            <h3 className="text-lg font-bold text-slate-900">Invalid Email Address</h3>
+            <p className="mt-2 text-sm text-slate-500">
+              The email address you entered is invalid. Please enter a real, valid email address to receive your OTP.
+            </p>
+            <button
+              onClick={() => setInvalidEmailPopup(false)}
+              className="mt-6 w-full rounded-xl bg-[#002147] py-3.5 text-sm font-bold text-white hover:bg-slate-800"
+            >
+              Try Again
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
