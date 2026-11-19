@@ -2,15 +2,20 @@ import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 
+const isValidEmail = (value) =>
+  /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(String(value || '').trim());
+
 export default function Login() {
   const [searchParams] = useSearchParams();
-  const initialMode = searchParams.get('mode') === 'signup' ? 'signup' : 'login';
+  const paramMode = searchParams.get('mode');
+  const initialMode = ['signup', 'force-reset', 'verify-otp'].includes(paramMode) ? paramMode : 'login';
 
-  const [mode, setMode] = useState(initialMode); // 'login' | 'signup' | 'verify-otp' | 'forgot' | 'reset-otp'
+  const [mode, setMode] = useState(initialMode); // 'login' | 'signup' | 'verify-otp' | 'forgot' | 'reset-otp' | 'force-reset'
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [otp, setOtp] = useState('');
   const [show, setShow] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -19,9 +24,10 @@ export default function Login() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const paramMode = searchParams.get('mode');
-    if (paramMode === 'signup') setMode('signup');
-    else if (paramMode === 'login') setMode('login');
+    const m = searchParams.get('mode');
+    if (['signup', 'login', 'force-reset', 'verify-otp'].includes(m)) {
+      setMode(m);
+    }
   }, [searchParams]);
 
   const clearMessages = () => {
@@ -29,24 +35,45 @@ export default function Login() {
     setNotice('');
   };
 
-  const routeAfterAuth = async (userId) => {
+  const validateEmailOrError = (value) => {
+    if (!isValidEmail(value)) {
+      setError('Invalid email address. Please enter a valid email (e.g., name@domain.com).');
+      return false;
+    }
+    return true;
+  };
+
+  const routeAfterAuth = async (user) => {
+    // 1. Check if Admin
     const { data: admin } = await supabase
       .from('admins')
       .select('id')
-      .eq('id', userId)
+      .eq('id', user.id)
       .maybeSingle();
 
     if (admin) {
       navigate('/admin');
-    } else {
-      navigate('/dashboard');
+      return;
     }
+
+    // 2. Enforce First-Time Password Reset for Admin-Created Accounts
+    if (user?.user_metadata?.must_change_password) {
+      setNewPassword('');
+      setConfirmPassword('');
+      setMode('force-reset');
+      setNotice('Security requirement: Please replace your temporary password before accessing your account.');
+      return;
+    }
+
+    navigate('/dashboard');
   };
 
   // 1. SIGN IN
   const handleLogin = async (e) => {
     e.preventDefault();
     clearMessages();
+    if (!validateEmailOrError(email)) return;
+
     setLoading(true);
     try {
       const { data: authData, error: loginError } = await supabase.auth.signInWithPassword({
@@ -57,14 +84,14 @@ export default function Login() {
       if (loginError) {
         if (loginError.message.toLowerCase().includes('email not confirmed')) {
           setMode('verify-otp');
-          setNotice('Your account is not verified yet. Enter the 6-digit OTP sent to your email.');
+          setNotice('Account not activated. Enter the 6-digit OTP sent to your email to complete opening.');
         } else {
           setError('Invalid email or password. Please try again.');
         }
         return;
       }
 
-      await routeAfterAuth(authData.user.id);
+      await routeAfterAuth(authData.user);
     } catch (err) {
       setError(err.message || 'Could not sign in.');
     } finally {
@@ -76,17 +103,22 @@ export default function Login() {
   const handleSignup = async (e) => {
     e.preventDefault();
     clearMessages();
+    if (!validateEmailOrError(email)) return;
     if (password.length < 6) {
       setError('Password must be at least 6 characters.');
       return;
     }
+
     setLoading(true);
     try {
       const { error: signupError } = await supabase.auth.signUp({
         email: email.trim().toLowerCase(),
         password,
         options: {
-          data: { full_name: fullName.trim() }
+          data: {
+            full_name: fullName.trim(),
+            must_change_password: false
+          }
         }
       });
 
@@ -94,7 +126,7 @@ export default function Login() {
 
       setOtp('');
       setMode('verify-otp');
-      setNotice('Account created! Enter the 6-digit OTP sent to your email to complete registration.');
+      setNotice('OTP sent! Your account will not be created until you submit the 6-digit code from your email.');
     } catch (err) {
       setError(err.message || 'Could not create account.');
     } finally {
@@ -106,6 +138,8 @@ export default function Login() {
   const handleVerifySignupOtp = async (e) => {
     e.preventDefault();
     clearMessages();
+    if (!validateEmailOrError(email)) return;
+
     setLoading(true);
     try {
       const { data, error: verifyError } = await supabase.auth.verifyOtp({
@@ -117,13 +151,13 @@ export default function Login() {
       if (verifyError) throw verifyError;
 
       if (data?.user) {
-        await routeAfterAuth(data.user.id);
+        await routeAfterAuth(data.user);
       } else {
         setMode('login');
         setNotice('Email verified! You can now sign in.');
       }
     } catch (err) {
-      setError(err.message || 'Invalid or expired OTP code.');
+      setError(err.message || 'Invalid or expired OTP code. Account opening cannot continue without a valid OTP.');
     } finally {
       setLoading(false);
     }
@@ -132,10 +166,8 @@ export default function Login() {
   // RESEND SIGNUP OTP
   const handleResendOtp = async () => {
     clearMessages();
-    if (!email.trim()) {
-      setError('Enter your email address first.');
-      return;
-    }
+    if (!validateEmailOrError(email)) return;
+
     setLoading(true);
     try {
       const { error: resendError } = await supabase.auth.resend({
@@ -151,10 +183,41 @@ export default function Login() {
     }
   };
 
-  // 4. FORGOT PASSWORD (SEND RECOVERY OTP)
+  // 4. FORCED FIRST-TIME PASSWORD RESET (ADMIN-CREATED ACCOUNTS)
+  const handleForceResetPassword = async (e) => {
+    e.preventDefault();
+    clearMessages();
+    if (newPassword.length < 6) {
+      setError('New password must be at least 6 characters.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { error: updateError } = await supabase.auth.updateUser({
+        password: newPassword,
+        data: { must_change_password: false }
+      });
+      if (updateError) throw updateError;
+
+      navigate('/dashboard');
+    } catch (err) {
+      setError(err.message || 'Could not update password.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 5. FORGOT PASSWORD (SEND RECOVERY OTP)
   const handleForgotPassword = async (e) => {
     e.preventDefault();
     clearMessages();
+    if (!validateEmailOrError(email)) return;
+
     setLoading(true);
     try {
       const { error: resetError } = await supabase.auth.resetPasswordForEmail(
@@ -173,7 +236,7 @@ export default function Login() {
     }
   };
 
-  // 5. VERIFY RECOVERY OTP & SET NEW PASSWORD
+  // 6. VERIFY RECOVERY OTP & SET NEW PASSWORD
   const handleResetPassword = async (e) => {
     e.preventDefault();
     clearMessages();
@@ -181,6 +244,7 @@ export default function Login() {
       setError('New password must be at least 6 characters.');
       return;
     }
+
     setLoading(true);
     try {
       const { error: verifyError } = await supabase.auth.verifyOtp({
@@ -191,7 +255,8 @@ export default function Login() {
       if (verifyError) throw verifyError;
 
       const { error: updateError } = await supabase.auth.updateUser({
-        password: newPassword
+        password: newPassword,
+        data: { must_change_password: false }
       });
       if (updateError) throw updateError;
 
@@ -216,7 +281,7 @@ export default function Login() {
       <div className="w-full max-w-md bg-white p-8 rounded-3xl shadow-sm border border-slate-200">
         {error && (
           <div className="mb-5 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-medium text-rose-700">
-            {error}
+            ⚠️ {error}
           </div>
         )}
         {notice && (
@@ -231,7 +296,7 @@ export default function Login() {
             <h2 className="text-2xl font-semibold mb-2">Welcome back</h2>
             <p className="text-slate-500 text-sm mb-6">Please enter your details to sign in.</p>
 
-            <form onSubmit={handleLogin} className="space-y-4">
+            <form onSubmit={handleLogin} noValidate className="space-y-4">
               <div>
                 <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Email Address</label>
                 <input
@@ -311,7 +376,7 @@ export default function Login() {
             <h2 className="text-2xl font-semibold mb-2">Open an account</h2>
             <p className="text-slate-500 text-sm mb-6">Create your FundFort Bank account in seconds.</p>
 
-            <form onSubmit={handleSignup} className="space-y-4">
+            <form onSubmit={handleSignup} noValidate className="space-y-4">
               <div>
                 <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Full Name</label>
                 <input
@@ -381,10 +446,10 @@ export default function Login() {
           <>
             <h2 className="text-2xl font-semibold mb-2">Verify your email</h2>
             <p className="text-slate-500 text-sm mb-6">
-              Enter the 6-digit OTP sent to your email to complete account opening.
+              Enter the 6-digit OTP sent to your email. Account creation will not complete without it.
             </p>
 
-            <form onSubmit={handleVerifySignupOtp} className="space-y-4">
+            <form onSubmit={handleVerifySignupOtp} noValidate className="space-y-4">
               <div>
                 <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Email Address</label>
                 <input
@@ -437,6 +502,52 @@ export default function Login() {
           </>
         )}
 
+        {/* --- FORCED FIRST-TIME PASSWORD RESET VIEW --- */}
+        {mode === 'force-reset' && (
+          <>
+            <span className="inline-block mb-3 rounded-full bg-amber-100 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-amber-800">
+              First-Time Login Security
+            </span>
+            <h2 className="text-2xl font-semibold mb-2">Reset Your Password</h2>
+            <p className="text-slate-500 text-sm mb-6">
+              You signed in with a temporary password. Create your own secure password to continue to your dashboard.
+            </p>
+
+            <form onSubmit={handleForceResetPassword} className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">New Password</label>
+                <input
+                  type={show ? 'text' : 'password'}
+                  required
+                  minLength={6}
+                  value={newPassword}
+                  placeholder="Minimum 6 characters"
+                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none transition-all"
+                  onChange={(e) => setNewPassword(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Confirm New Password</label>
+                <input
+                  type={show ? 'text' : 'password'}
+                  required
+                  minLength={6}
+                  value={confirmPassword}
+                  placeholder="Re-enter new password"
+                  className="w-full border border-slate-200 p-3.5 rounded-xl text-sm focus:ring-2 focus:ring-[#002147] outline-none transition-all"
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                />
+              </div>
+              <button
+                disabled={loading}
+                className="w-full bg-[#002147] text-white py-4 rounded-xl font-bold text-sm hover:bg-slate-800 transition-all disabled:opacity-50"
+              >
+                {loading ? 'Saving Password...' : 'Save Password & Enter Dashboard'}
+              </button>
+            </form>
+          </>
+        )}
+
         {/* --- FORGOT PASSWORD VIEW --- */}
         {mode === 'forgot' && (
           <>
@@ -445,7 +556,7 @@ export default function Login() {
               Enter your email address and we&apos;ll send a 6-digit reset code.
             </p>
 
-            <form onSubmit={handleForgotPassword} className="space-y-4">
+            <form onSubmit={handleForgotPassword} noValidate className="space-y-4">
               <div>
                 <label className="text-xs font-semibold text-slate-700 block mb-1.5 ml-1">Email Address</label>
                 <input
