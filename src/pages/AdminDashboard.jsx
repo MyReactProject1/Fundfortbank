@@ -9,6 +9,9 @@ const money = (amount, currency = 'USD') =>
 
 const dateTime = (value) => value ? new Date(value).toLocaleString() : '—';
 
+const isValidEmail = (value) =>
+  /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(String(value || '').trim());
+
 const emptyProfile = {
   full_name: '', phone: '', address: '', account_type: 'Standard',
   currency: 'USD', avatar_url: ''
@@ -41,6 +44,7 @@ export default function AdminDashboard() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newUserForm, setNewUserForm] = useState(emptyNewUser);
   const [createdCredentials, setCreatedCredentials] = useState(null);
+  const [modalError, setModalError] = useState('');
   const [directBalance, setDirectBalance] = useState('');
 
   const [adjustment, setAdjustment] = useState({
@@ -203,14 +207,30 @@ export default function AdminDashboard() {
     await loadCustomerRecords(data.id);
   };
 
-  // --- SUPER ADMIN: CREATE NEW USER (AUTO ACCOUNT NUMBER + OTP EMAIL) ---
+  // --- SUPER ADMIN: CREATE NEW USER (STRICT EMAIL + MANDATORY OTP + TEMP PASSWORD) ---
   const handleCreateUser = async (event) => {
     event.preventDefault();
-    await run(async () => {
+    setModalError('');
+
+    if (!newUserForm.full_name.trim()) {
+      setModalError('Please enter the customer’s full name.');
+      return;
+    }
+
+    const cleanEmail = newUserForm.email.trim().toLowerCase();
+    if (!isValidEmail(cleanEmail)) {
+      setModalError('Invalid email address. Please enter a real, valid email (e.g., name@domain.com).');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+    setNotice('');
+    try {
       const { data, error: fnError } = await supabase.functions.invoke('admin-create-customer', {
         body: {
           full_name: newUserForm.full_name.trim(),
-          email: newUserForm.email.trim().toLowerCase(),
+          email: cleanEmail,
           balance: Number(newUserForm.balance) || 0,
           account_type: newUserForm.account_type,
           currency: newUserForm.currency,
@@ -224,12 +244,19 @@ export default function AdminDashboard() {
 
       setCreatedCredentials({
         email: data.email,
-        account_id: data.account_id,
+        account_id: data.account_id || 'Pending OTP Verification',
+        temp_password: data.temp_password,
         otp_sent: data.otp_sent
       });
 
+      setNotice('Pending account created & 6-digit OTP email sent.');
       await fetchCustomers();
-    }, 'Customer created & OTP verification email sent.');
+    } catch (err) {
+      console.error(err);
+      setModalError(err?.message || 'Could not create account.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   // --- SUPER ADMIN: DIRECT BALANCE OVERRIDE ---
@@ -447,6 +474,7 @@ export default function AdminDashboard() {
               onClick={() => {
                 setNewUserForm(emptyNewUser());
                 setCreatedCredentials(null);
+                setModalError('');
                 setShowCreateModal(true);
               }}
               className="rounded-lg bg-[#002147] px-4 py-2 text-sm font-bold text-white hover:bg-slate-800"
@@ -487,7 +515,7 @@ export default function AdminDashboard() {
           <div className="flex flex-col gap-3 border-b border-slate-200 p-5 md:flex-row md:items-center md:justify-between">
             <div>
               <h2 className="font-bold text-slate-900">Customer directory</h2>
-              <p className="text-xs text-slate-500">Select a customer to open their Super Admin workspace.</p>
+              <p className="text-xs text-slate-500">Only OTP-verified accounts appear in the active customer directory.</p>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
               <input value={search} onChange={e => setSearch(e.target.value)}
@@ -540,7 +568,7 @@ export default function AdminDashboard() {
         </section>
       </main>
 
-      {/* --- CREATE NEW USER MODAL (SCROLLABLE, AUTO ACCOUNT NUMBER + OTP) --- */}
+      {/* --- CREATE NEW USER MODAL (SCROLLABLE, STRICT EMAIL, MANDATORY OTP + TEMP PASSWORD) --- */}
       {showCreateModal && (
         <div className="fixed inset-0 z-[600] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
           <div className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
@@ -553,31 +581,36 @@ export default function AdminDashboard() {
             </header>
 
             <div className="overflow-y-auto p-6">
+              {modalError && (
+                <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-700">
+                  ⚠️ {modalError}
+                </div>
+              )}
+
               {createdCredentials ? (
                 <div className="space-y-4">
                   <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
-                    <p className="font-bold text-emerald-800">Account Created Successfully!</p>
+                    <p className="font-bold text-emerald-800">OTP Sent — Pending User Verification</p>
                     <p className="mt-1 text-xs text-emerald-700">
-                      {createdCredentials.otp_sent
-                        ? 'A 6-digit OTP verification email has been sent to the customer.'
-                        : 'Account created, but the OTP email could not be sent.'}
+                      Share the temporary password below with the customer. They must verify their 6-digit email OTP first, and will be forced to set a new password on first login.
                     </p>
                     <div className="mt-3 space-y-2 rounded-lg border border-emerald-100 bg-white p-3 font-mono text-xs text-slate-800">
                       <p><strong>Email:</strong> {createdCredentials.email}</p>
-                      <p><strong>Account Number:</strong> <span className="font-bold text-blue-700">{createdCredentials.account_id}</span></p>
+                      <p><strong>Temporary Password:</strong> <span className="font-bold text-rose-600">{createdCredentials.temp_password}</span></p>
+                      <p><strong>Account Number:</strong> <span className="font-bold text-amber-700">{createdCredentials.account_id}</span></p>
                     </div>
                   </div>
                   <div className="flex gap-2">
                     <button
                       onClick={() => {
                         navigator.clipboard.writeText(
-                          `Email: ${createdCredentials.email}\nAccount Number: ${createdCredentials.account_id}`
+                          `FundFort Bank Account Details\nEmail: ${createdCredentials.email}\nTemporary Password: ${createdCredentials.temp_password}\nNote: Verify the 6-digit OTP sent to your email first, then reset your password upon login.`
                         );
-                        setNotice('Account details copied to clipboard.');
+                        setNotice('Onboarding credentials copied to clipboard.');
                       }}
                       className="flex-1 rounded-lg border border-slate-300 py-2.5 text-xs font-bold hover:bg-slate-50"
                     >
-                      COPY DETAILS
+                      COPY CREDENTIALS
                     </button>
                     <button
                       onClick={() => setShowCreateModal(false)}
@@ -588,9 +621,9 @@ export default function AdminDashboard() {
                   </div>
                 </div>
               ) : (
-                <form onSubmit={handleCreateUser} className="grid gap-4 pb-2 sm:grid-cols-2">
+                <form onSubmit={handleCreateUser} noValidate className="grid gap-4 pb-2 sm:grid-cols-2">
                   <p className="rounded-lg bg-blue-50 p-3 text-xs text-blue-800 sm:col-span-2">
-                    Supabase will automatically generate a unique 10-digit account number and send a 6-digit OTP verification email to the customer.
+                    A 6-digit OTP will be emailed to the customer and a temporary password will be generated. Their 10-digit account number is created only after OTP verification.
                   </p>
                   <label className="text-xs font-bold text-slate-600 sm:col-span-2">
                     Full Name *
@@ -608,7 +641,10 @@ export default function AdminDashboard() {
                       type="email"
                       required
                       value={newUserForm.email}
-                      onChange={e => setNewUserForm({ ...newUserForm, email: e.target.value })}
+                      onChange={e => {
+                        setModalError('');
+                        setNewUserForm({ ...newUserForm, email: e.target.value });
+                      }}
                       className="mt-1 w-full rounded-lg border p-2.5 text-sm"
                       placeholder="jane@example.com"
                     />
@@ -673,7 +709,7 @@ export default function AdminDashboard() {
                       disabled={loading}
                       className="rounded-lg bg-[#002147] px-5 py-2.5 text-xs font-bold text-white disabled:opacity-50"
                     >
-                      {loading ? 'CREATING...' : 'CREATE ACCOUNT'}
+                      {loading ? 'SENDING OTP...' : 'CREATE & SEND OTP'}
                     </button>
                   </div>
                 </form>
